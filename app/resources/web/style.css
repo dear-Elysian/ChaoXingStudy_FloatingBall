@@ -1,0 +1,329 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --accent: #3b82f6;
+  --danger: #ef4444;
+  --text: #1f2937;
+  --muted: #9ca3af;
+  --card-alpha: 1;
+  --card-bg: rgba(255, 255, 255, var(--card-alpha));
+}
+
+body {
+  font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+  font-size: 13px;
+  color: var(--text);
+  background: linear-gradient(160deg, #c9dcf7 0%, #e2eefc 50%, #d2ddf5 100%);
+  height: 100vh;
+  overflow: hidden;
+  user-select: none;
+}
+
+.view { height: 100vh; display: flex; flex-direction: column; }
+.hidden { display: none !important; }
+
+/* ---------- 登录界面 ---------- */
+#view-login { align-items: center; justify-content: center; }
+.login-box { text-align: center; }
+.login-logo {
+  width: 76px; height: 76px; border-radius: 50%;
+  object-fit: cover; display: block;
+  margin: 0 auto 16px;
+}
+.login-title { font-size: 20px; font-weight: bold; margin-bottom: 0; }
+
+/* 登录进度条（§8.1）：登录前整块留空，登录中由真实阶段事件驱动宽度 */
+.login-progress-slot {
+  height: 68px;
+  display: flex; align-items: center; justify-content: center;
+}
+.login-progress {
+  width: 260px; height: 8px;
+  border-radius: 4px; background: rgba(255, 255, 255, .72);
+  box-shadow: inset 0 0 0 1px rgba(59, 130, 246, .18);
+  overflow: hidden;
+}
+.login-progress-bar {
+  width: 0; height: 100%; border-radius: 4px;
+  background: linear-gradient(90deg, var(--accent), #60a5fa);
+  transition: width .3s cubic-bezier(.25, .8, .35, 1);
+}
+
+/* ---------- 全局交互动画（§7.8） ---------- */
+@keyframes slide-in-right { from { transform: translateX(32px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+@keyframes slide-in-left  { from { transform: translateX(-32px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+.slide-in-right { animation: slide-in-right .22s cubic-bezier(.22, .61, .36, 1); }
+.slide-in-left  { animation: slide-in-left  .22s cubic-bezier(.22, .61, .36, 1); }
+
+/* ---------- 按钮（全局统一样式，§7.8）----------
+   常规（不悬停）：白底 + 主色字 + 主色边框（同「设置」）
+   悬停：主色底 + 白字（同「刷新」），带过渡动画
+   禁用：灰底灰字灰框 ------------------------------------------------- */
+.btn {
+  border: 1px solid var(--accent); border-radius: 8px; padding: 8px 20px;
+  font-size: 13px; cursor: pointer; font-family: inherit;
+  background: #fff; color: var(--accent);
+  transition: background-color .18s ease, color .18s ease,
+              border-color .18s ease, box-shadow .18s ease, transform .12s ease;
+}
+.btn:hover:not(:disabled) {
+  background: var(--accent); color: #fff;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, .28);
+}
+.btn:active:not(:disabled) { transform: translateY(1px); }
+.btn:disabled { background: #f3f4f6; color: #9ca3af; border-color: #d1d5db; cursor: not-allowed; }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+/* 旧语义类归一到统一外观（保留类名，避免改动 HTML 结构） */
+.btn-primary, .btn-ghost { background: #fff; color: var(--accent); border: 1px solid var(--accent); }
+
+/* ---------- 主面板 ---------- */
+/* 头部与滚动内容的分界（§8.2.4）：头部作悬浮卡片（四周留白 + 圆角 + 投影），
+   滚动区与头部之间**留出与上方等量的空隙**，使滚动裁切边界不落在模块边缘；
+   头部底色接近纯白并加强投影，与背景/卡片形成明显明暗层次。 */
+.panel-header {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 16px;
+  position: relative; z-index: 2;
+  margin: 10px 10px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.97);
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.10),
+              0 10px 20px -12px rgba(15, 23, 42, 0.45);
+}
+.avatar {
+  width: 48px; height: 48px; border-radius: 50%;
+  background: var(--accent); color: #fff; font-weight: bold; font-size: 20px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  background-size: cover; background-position: center;
+}
+.avatar-sm { width: 28px; height: 28px; font-size: 13px; }
+.acct-row { gap: 10px; }
+.num-input {
+  width: 74px; margin-left: 6px; padding: 3px 6px;
+  border-radius: 5px; border: 1px solid #d1d5db; font-family: inherit;
+}
+.num-input:disabled, .row select:disabled { background: #f3f4f6; color: var(--muted); }
+.text-input {
+  flex: 1; min-width: 0; padding: 3px 6px;
+  border-radius: 5px; border: 1px solid #d1d5db;
+  font-family: inherit; font-size: 12px;
+}
+
+/* ---------- 课程选择分组（已选 / 未选，未选默认折叠，§7.4）---------- */
+.course-group { margin-top: 8px; }
+.course-group.collapsed .group-body { display: none; }
+.group-title {
+  font-weight: bold; font-size: 13px; color: #4b5563;
+  padding: 6px 0; user-select: none;
+}
+.group-title.clickable { cursor: pointer; color: var(--accent); transition: opacity .15s ease; }
+.group-title.clickable:hover { opacity: .82; }
+.group-body { border-top: 1px solid #e5e7eb; padding-top: 4px; }
+.nickname { font-weight: bold; font-size: 16px; }
+/* 「上次刷新」小字保持原大小不变 */
+.refresh-time { color: var(--muted); font-size: 11px; }
+/* 账号卡右上角「详情」按钮（§8.2.9）：靠右、尺寸与头部文字协调 */
+.home-btn { margin-left: auto; padding: 5px 14px; font-size: 12px; }
+
+.panel-body {
+  flex: 1; overflow-y: auto; padding: 0 10px 10px;
+}
+.panel-body::-webkit-scrollbar { width: 6px; }
+.panel-body::-webkit-scrollbar-thumb { background: #c7d2fe; border-radius: 3px; }
+
+.card {
+  background: var(--card-bg);
+  border-radius: 10px; padding: 10px 12px; margin-bottom: 10px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.10), 0 6px 14px -12px rgba(15, 23, 42, 0.35);
+}
+.card-title { font-weight: bold; margin-bottom: 8px; }
+.card-title.clickable { cursor: pointer; }
+.muted { color: var(--muted); font-weight: normal; }
+.hint { color: var(--muted); font-size: 11px; margin-top: 6px; }
+
+.panel-footer {
+  display: flex; justify-content: space-between;
+  padding: 10px 14px;
+}
+
+/* ---------- 作业 Tab（§8.2.1：铺满整行、间隔加大） ---------- */
+.tabs {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 10px; margin-bottom: 8px;
+}
+.tab {
+  padding: 4px 10px; border-radius: 6px; cursor: pointer;
+  color: var(--muted); font-size: 12px; white-space: nowrap;
+}
+.tab.active { background: var(--accent); color: #fff; }
+/* 考试只有两个 Tab（§8.2.3）：居中排列，不铺满整行 */
+#exam-tabs { justify-content: center; gap: 24px; }
+#discussion-tabs { justify-content: center; gap: 24px; }
+
+/* ---------- 条目 ---------- */
+.item {
+  padding: 7px 8px; border-radius: 6px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.item:hover { background: #f1f5f9; }
+.item-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item.unread .item-title { font-weight: bold; }
+.item-meta { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+.item-deadline { color: var(--danger); font-weight: bold; }
+.item-status-done { color: #10b981; }
+.empty-tip { color: var(--muted); text-align: center; padding: 14px 0; }
+.exam-empty { color: var(--muted); text-align: center; padding: 18px 0; }
+
+.unread-dot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--danger); margin-right: 5px; vertical-align: middle;
+}
+
+/* ---------- 设置 ---------- */
+.settings-title { font-weight: bold; font-size: 18px; }
+/* 设置页页头整体扩大：返回按钮 + 标题 + 上下留白（与主面板头部独立） */
+#view-settings .panel-header { padding: 18px 16px; }
+#btn-back { padding: 6px 14px; font-size: 13px; }
+.row { display: flex; align-items: center; gap: 6px; padding: 5px 0; }
+.section-gap { margin-top: 16px; }
+.row select { margin-left: auto; padding: 3px 6px; border-radius: 5px; border: 1px solid #d1d5db; }
+/* 刷新模块两个下拉框等大（§7.2：固定宽度，不受选项文字长度影响） */
+#set-login-interval, #set-throttle { width: 108px; }
+#course-checked .row, #course-unchecked .row { border-bottom: 1px dashed #e5e7eb; }
+#course-checked .row:last-child, #course-unchecked .row:last-child { border-bottom: none; }
+
+/* ---------- Toast ---------- */
+.toast {
+  position: fixed; left: 50%; bottom: 60px; transform: translateX(-50%);
+  background: rgba(31, 41, 55, 0.92); color: #fff;
+  padding: 8px 16px; border-radius: 8px; font-size: 12px;
+  max-width: 85%; z-index: 100;
+}
+
+/* ---------- 右键菜单 ---------- */
+.ctx-menu {
+  position: fixed; background: #fff; border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+  padding: 4px 0; z-index: 200; min-width: 110px;
+}
+.ctx-item { padding: 7px 16px; cursor: pointer; }
+.ctx-item:hover { background: #f1f5f9; }
+.ctx-item.disabled { color: var(--muted); cursor: default; }
+.ctx-item.disabled:hover { background: transparent; }
+
+/* ---------- 窗口缩放命中层（§8.2.6）----------
+   WebView2 铺满客户区，WindowChrome 的左右下边框收不到鼠标命中；
+   这里用不可见的页内边缘/角区域发起系统原生缩放，不影响任何控件。 */
+#resize-layer { position: fixed; inset: 0; z-index: 50; pointer-events: none; }
+#resize-layer .rz { position: absolute; pointer-events: auto; }
+.rz-l { left: 0; top: 10px; bottom: 10px; width: 5px; cursor: w-resize; }
+/* 右边留 4px：面板右侧滚动条宽 6px，保留 2px 仍可拖动 */
+.rz-r { right: 0; top: 10px; bottom: 10px; width: 4px; cursor: e-resize; }
+.rz-b { left: 10px; right: 10px; bottom: 0; height: 5px; cursor: s-resize; }
+.rz-bl { left: 0; bottom: 0; width: 12px; height: 12px; cursor: sw-resize; }
+.rz-br { right: 0; bottom: 0; width: 12px; height: 12px; cursor: se-resize; }
+
+/* ---------- 背景图层（§7.5 个性化） ---------- */
+#bg-layer {
+  position: fixed; inset: 0; z-index: 0;
+  background-size: cover; background-position: center;
+  pointer-events: none;
+}
+.view { position: relative; z-index: 1; }
+
+/* ---------- 设置：悬浮球图案 ---------- */
+.ball-row { gap: 12px; }
+.ball-preview {
+  width: 48px; height: 48px; border-radius: 50%;
+  background: var(--accent); color: #fff;
+  font-size: 20px; font-weight: bold;
+  display: flex; align-items: center; justify-content: center;
+  background-size: cover; background-position: center;
+  flex-shrink: 0;
+}
+.ball-actions { display: flex; gap: 8px; }
+
+/* ---------- 设置：个性化 ---------- */
+.spacer { flex: 1; }
+.slider { flex: 1; margin: 0 8px; accent-color: var(--accent); }
+
+/* ---------- 设置：AI 模型（§7.9）----------
+   未启用「启用AI模型」时，下方字段整体置灰且不可操作；
+   API Key 只以星号占位展示，真实值仅保存在 C# 侧 DPAPI 文件中。 */
+.ai-fields { transition: opacity .18s ease; }
+.ai-fields.disabled { opacity: .45; }
+.ai-fields.disabled input, .ai-fields.disabled button { pointer-events: none; }
+.ai-label { width: 56px; flex-shrink: 0; }
+/* 「测试模型」独立成行并水平居中，不改动「当前模型」行原有布局（§7.9） */
+.ai-test-row { display: flex; justify-content: center; }
+
+/* ---------- 设置：账号清除 ---------- */
+/* 危险按钮（退出登录 / 清除多余账号 / 清除所有账号 / 清除全部数据，§7.8）
+   不悬停 = 白底红字红框；悬停 = 红底白字红框；均带过渡动画 */
+.btn-danger, .btn-outline-danger {
+  background: #fff; color: var(--danger); border: 1px solid var(--danger);
+}
+.btn-danger:hover:not(:disabled), .btn-outline-danger:hover:not(:disabled) {
+  background: var(--danger); color: #fff;
+  box-shadow: 0 2px 8px rgba(239, 68, 68, .28);
+}
+.btn-danger:disabled, .btn-outline-danger:disabled {
+  background: #f3f4f6; color: #fca5a5; border-color: #fca5a5; cursor: not-allowed;
+}
+.clear-sep { border-top: 1px dashed #e5e7eb; margin: 8px 0; }
+/* 账号区 4 个危险按钮等大（统一宽度与高度） */
+.acct-actions .btn { width: 132px; padding: 8px 0; font-size: 13px; text-align: center; }
+
+/* ---------- 通用确认弹窗（替代原生 confirm，自适应内容、始终位于面板内容上层） ---------- */
+.confirm-overlay {
+  position: fixed; inset: 0; z-index: 300;
+  background: rgba(31, 41, 55, 0.35);
+  display: flex; align-items: center; justify-content: center;
+}
+.confirm-box {
+  background: #fff; border-radius: 12px; padding: 16px 18px;
+  width: 82%; max-width: 320px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+}
+.confirm-text { white-space: pre-line; line-height: 1.7; margin-bottom: 14px; }
+.confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* ---------- 图片裁剪弹窗（§7.5）：上传后先裁剪、确定再生效 ---------- */
+.crop-box {
+  background: #fff; border-radius: 12px; padding: 14px 16px;
+  width: 88%; max-width: 344px;
+  box-shadow: 0 8px 30px rgba(0,0,0,.2);
+}
+.crop-title { font-weight: bold; margin-bottom: 10px; }
+.crop-stage {
+  position: relative; overflow: hidden; border-radius: 8px;
+  background: #f1f5f9; cursor: move; touch-action: none;
+  margin: 0 auto;
+}
+.crop-stage img { display: block; width: 100%; height: 100%; pointer-events: none; }
+/* 裁剪框：框外区域用超大投影模拟遮罩（被 stage 的 overflow 裁掉） */
+.crop-frame {
+  position: absolute; box-sizing: border-box;
+  border: 2px solid var(--accent);
+  box-shadow: 0 0 0 9999px rgba(31, 41, 55, .45);
+  cursor: move;
+}
+/* 抓取点定位层：inset:-2px 抵消 .crop-frame 的 2px 边框，使本层边界与矩形外沿严格重合。
+   本层无边框，故 padding box == border box，四角用 0/100% 即为精确外角，
+   再用 translate(-50%,-50%) 把圆点圆心对到角点上，无需任何边框像素补偿。 */
+.crop-frame-in { position: absolute; inset: -2px; }
+.crop-handle {
+  position: absolute; width: 14px; height: 14px; box-sizing: border-box;
+  border-radius: 50%; background: #fff; border: 2px solid var(--accent);
+  transform: translate(-50%, -50%);
+  z-index: 2;
+}
+.crop-handle::after { content: ""; position: absolute; inset: -5px; }
+.crop-handle[data-h="nw"] { left: 0;    top: 0;    cursor: nwse-resize; }
+.crop-handle[data-h="ne"] { left: 100%; top: 0;    cursor: nesw-resize; }
+.crop-handle[data-h="sw"] { left: 0;    top: 100%; cursor: nesw-resize; }
+.crop-handle[data-h="se"] { left: 100%; top: 100%; cursor: nwse-resize; }
+.crop-hint { color: var(--muted); font-size: 11px; margin-top: 8px; }
+.crop-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }

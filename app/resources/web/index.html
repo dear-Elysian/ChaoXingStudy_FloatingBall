@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>学习通悬浮球</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="bg-layer" class="hidden"></div>
+
+<!-- 登录界面（§8.1） -->
+<div id="view-login" class="view hidden">
+  <div class="login-box">
+    <!-- 登录页标识统一使用程序图标（§7.5.1） -->
+    <img class="login-logo" src="https://cxball.app/icon.png" alt="学习通悬浮球">
+    <div class="login-title">学习通悬浮球</div>
+    <!-- 副标题文字不显示；该区域登录前留空，登录中显示由真实加载阶段驱动的进度条（§8.1） -->
+    <div class="login-progress-slot">
+      <div class="login-progress hidden" id="login-progress">
+        <div class="login-progress-bar" id="login-progress-bar"></div>
+      </div>
+    </div>
+    <button id="btn-login" class="btn btn-primary">去登录</button>
+  </div>
+</div>
+
+<!-- 主面板（§8.2） -->
+<div id="view-panel" class="view hidden">
+  <div class="panel-header">
+    <div class="avatar" id="avatar">学</div>
+    <div class="user-info">
+      <div class="nickname" id="nickname">—</div>
+      <div class="refresh-time" id="refresh-time"></div>
+    </div>
+    <!-- 账号卡右上角「详情」：用设置里的浏览器打开已登录的学习通首页（§8.2.9） -->
+    <button class="btn home-btn" id="btn-home-web">详情</button>
+  </div>
+
+  <div class="panel-body" id="panel-body">
+    <!-- 作业模块（锁定显示，§7.3） -->
+    <div class="card" id="mod-assignment">
+      <div class="card-title">作业</div>
+      <div class="tabs" id="assign-tabs"></div>
+      <div class="item-list" id="assign-list"></div>
+    </div>
+
+    <!-- 随堂练习模块：四 Tab + 默认折叠，点击标题折叠/展开 -->
+    <div class="card" id="mod-practice">
+      <div class="card-title clickable" id="practice-title">随堂练习 <span class="muted" id="practice-arrow">▸</span></div>
+      <div class="hidden" id="practice-body">
+        <div class="tabs" id="practice-tabs"></div>
+        <div class="item-list" id="practice-list"></div>
+      </div>
+    </div>
+
+    <!-- 主题讨论模块：两 Tab（未结束 / 全部），默认折叠，右键「详情」用本机浏览器打开讨论详情页 -->
+    <div class="card" id="mod-discussion">
+      <div class="card-title clickable" id="discussion-title">主题讨论 <span class="muted" id="discussion-arrow">▸</span></div>
+      <div class="hidden" id="discussion-body">
+        <div class="tabs" id="discussion-tabs"></div>
+        <div class="item-list" id="discussion-list"></div>
+      </div>
+    </div>
+
+    <!-- 消息模块：默认折叠，点击标题折叠/展开 -->
+    <div class="card" id="mod-notice">
+      <div class="card-title clickable" id="notice-title">消息 <span class="muted" id="notice-arrow">▸</span></div>
+      <div class="item-list hidden" id="notice-list"></div>
+    </div>
+
+    <!-- 考试模块：两 Tab（未完成 / 全部），默认折叠，右键「详情」用本机浏览器打开考试页 -->
+    <div class="card" id="mod-exam">
+      <div class="card-title clickable" id="exam-title">考试 <span class="muted" id="exam-arrow">▸</span></div>
+      <div class="hidden" id="exam-body">
+        <div class="tabs" id="exam-tabs"></div>
+        <div class="item-list" id="exam-list"></div>
+      </div>
+    </div>
+    <!-- 新模块插槽：后续采集模块在此追加 -->
+  </div>
+
+  <div class="panel-footer">
+    <button id="btn-settings" class="btn btn-ghost">设置</button>
+    <button id="btn-refresh" class="btn btn-primary">刷新</button>
+  </div>
+</div>
+
+<!-- 设置视图（P0 为页内视图；独立窗口在正式版实现） -->
+<div id="view-settings" class="view hidden">
+  <div class="panel-header">
+    <button id="btn-back" class="btn btn-ghost btn-sm">‹ 返回</button>
+    <div class="settings-title">设置</div>
+  </div>
+  <div class="panel-body" id="settings-body">
+    <div class="card">
+      <div class="card-title">个性化</div>
+      <div class="row ball-row">
+        <div class="ball-preview" id="ball-preview">学</div>
+        <div class="ball-actions">
+          <button class="btn btn-ghost btn-sm" id="btn-ball-upload">修改图案</button>
+          <button class="btn btn-ghost btn-sm" id="btn-ball-reset">恢复默认</button>
+        </div>
+      </div>
+      <div class="hint">支持 png / jpg / webp，最大 15MB。</div>
+      <input type="file" id="file-ball" accept=".png,.jpg,.jpeg,.webp" hidden>
+      <div class="row section-gap">
+        <span>主面板背景图</span>
+        <span class="spacer"></span>
+        <button class="btn btn-ghost btn-sm" id="btn-bg-upload">上传图片</button>
+        <button class="btn btn-ghost btn-sm" id="btn-bg-reset">恢复默认</button>
+      </div>
+      <div class="hint" id="bg-current">未设置背景图</div>
+      <div class="row">
+        <span>背景透明度</span>
+        <input type="range" id="set-bg-opacity" min="0" max="100" step="1" class="slider">
+        <span id="bg-opacity-val" class="muted">75%</span>
+      </div>
+      <div class="row">
+        <span>模块透明度</span>
+        <input type="range" id="set-mod-opacity" min="0" max="100" step="1" class="slider">
+        <span id="mod-opacity-val" class="muted">100%</span>
+      </div>
+      <label class="row"><input type="checkbox" id="set-autostart"> 开机自启动</label>
+      <input type="file" id="file-bg" accept=".png,.jpg,.jpeg,.webp" hidden>
+    </div>
+
+    <div class="card">
+      <div class="card-title">刷新</div>
+      <label class="row"><input type="checkbox" id="set-login-auto"> 登录时自动刷新</label>
+      <div class="row">
+        <span>登录刷新间隔</span>
+        <select id="set-login-interval">
+          <option value="15">15 秒</option>
+          <option value="30">30 秒</option>
+          <option value="60">1 分钟</option>
+          <option value="300">5 分钟</option>
+          <option value="600">10 分钟</option>
+          <option value="900">15 分钟</option>
+          <option value="1800">30 分钟</option>
+          <option value="3600">60 分钟</option>
+        </select>
+      </div>
+      <div class="row">
+        <span>手动刷新节流</span>
+        <select id="set-throttle">
+          <option value="5">5 秒</option>
+          <option value="10">10 秒</option>
+          <option value="15">15 秒</option>
+          <option value="30">30 秒</option>
+        </select>
+      </div>
+      <div class="hint">不建议选择过短间隔：会增大平台风控判定风险。</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">详情浏览器</div>
+      <div class="row">
+        <input type="text" id="set-browser-path" class="text-input" placeholder="未填写浏览器地址，请手动填写或点击「自动」">
+        <button class="btn btn-ghost btn-sm" id="btn-browser-pick">选择</button>
+        <button class="btn btn-ghost btn-sm" id="btn-browser-auto">自动</button>
+      </div>
+      <div class="hint">[详情] 时用该浏览器打开，建议在网页里开启自动登录，否则可能出问题</div>
+    </div>
+
+    <!-- AI 模型（§7.9，BYOK）：开关默认不勾选；关闭时下方内容全部置灰不可操作 -->
+    <div class="card">
+      <div class="card-title">AI 模型</div>
+      <label class="row"><input type="checkbox" id="set-ai-enabled"> 启用AI模型</label>
+      <div id="ai-fields" class="ai-fields disabled">
+        <div class="row">
+          <span class="ai-label">接口地址</span>
+          <input type="text" id="set-ai-endpoint" class="text-input"
+                 placeholder="如 https://api.deepseek.com/v1" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="row">
+          <span class="ai-label">API Key</span>
+          <input type="password" id="set-ai-key" class="text-input"
+                 placeholder="未设置" autocomplete="new-password">
+        </div>
+        <div class="row">
+          <span class="ai-label">当前模型</span>
+          <span class="spacer"></span>
+          <span id="ai-model" class="muted">未知模型</span>
+          <button class="btn btn-ghost btn-sm" id="btn-ai-detect">检测模型</button>
+        </div>
+        <label class="row"><input type="checkbox" id="set-ai-thinking"> 启用思考链</label>
+        <div class="row ai-test-row">
+          <button class="btn btn-ghost btn-sm" id="btn-ai-test">测试模型</button>
+        </div>
+        <div class="hint">API Key 使用当前 Windows 用户加密后仅保存在本机，只发送到上方所填接口；界面不显示明文。</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">模块显示</div>
+      <label class="row"><input type="checkbox" id="set-mod-assignment" checked disabled> 作业</label>
+      <label class="row"><input type="checkbox" id="set-mod-practice"> 随堂练习</label>
+      <label class="row"><input type="checkbox" id="set-mod-notice"> 消息</label>
+      <label class="row"><input type="checkbox" id="set-mod-exam"> 考试</label>
+      <label class="row"><input type="checkbox" id="set-mod-discussion"> 主题讨论</label>
+    </div>
+
+    <div class="card">
+      <div class="card-title">课程选择</div>
+      <div class="row">
+        <button class="btn btn-ghost btn-sm" id="course-all">全选</button>
+        <button class="btn btn-ghost btn-sm" id="course-none">全不选</button>
+      </div>
+      <div class="course-group">
+        <div class="group-title" id="group-checked-title">已选中 (<span id="checked-count">0</span>)</div>
+        <div id="course-checked"></div>
+      </div>
+      <div class="course-group collapsed" id="group-unchecked-wrap">
+        <div class="group-title clickable" id="group-unchecked-title">未选中 (<span id="unchecked-count">0</span>) ▸</div>
+        <div id="course-unchecked" class="group-body"></div>
+      </div>
+      <div class="hint">未选中的课程不展示、刷新时也不请求。</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">作业时间显示</div>
+      <label class="row"><input type="checkbox" id="set-time-remaining"> 剩余小时数</label>
+      <label class="row"><input type="checkbox" id="set-time-deadline"> 截止日期</label>
+      <div class="hint">都不勾选则不显示时间，仅显示作业状态。</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">消息展示</div>
+      <label class="row">只展示最近
+        <select id="set-notice-days">
+          <option value="7">7 天</option>
+          <option value="14">14 天</option>
+          <option value="30">30 天</option>
+          <option value="90">90 天</option>
+          <option value="180">180 天</option>
+          <option value="360">360 天</option>
+        </select>
+        的消息</label>
+    </div>
+
+    <div class="card">
+      <div class="card-title">缓存清理</div>
+      <label class="row"><input type="radio" name="cache-mode" value="time"> 按时间定期清理
+        <select id="set-cache-days">
+          <option value="1">1 天</option>
+          <option value="3">3 天</option>
+          <option value="7">7 天</option>
+          <option value="15">15 天</option>
+          <option value="30">1 个月（30 天）</option>
+        </select></label>
+      <label class="row"><input type="radio" name="cache-mode" value="size"> 限制缓存大小
+        <input type="number" id="set-cache-limit" min="100" step="50" class="num-input"> MB</label>
+      <div class="hint">仅清理网页缓存，当前网页缓存约 <span id="cache-size">—</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">账号</div>
+      <div class="row acct-row">
+        <div class="avatar avatar-sm" id="acct-avatar">学</div>
+        <div>
+          <div id="acct-nick">—</div>
+          <div class="muted" id="acct-school"></div>
+        </div>
+      </div>
+      <div class="row acct-actions"><button id="btn-logout" class="btn btn-danger">退出登录</button></div>
+      <div class="row acct-actions"><button id="btn-clear-surplus" class="btn btn-outline-danger btn-sm">清除多余账号</button></div>
+      <div class="row acct-actions"><button id="btn-clear-accounts" class="btn btn-outline-danger btn-sm">清除所有账号</button></div>
+      <div class="clear-sep"></div>
+      <div class="row acct-actions"><button id="btn-clear-all" class="btn btn-danger">清除全部数据</button></div>
+      <div class="hint">清除全部数据将删除账号、设置、规则、日志与浏览缓存，软件回到初始状态并退出。</div>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+<div id="ctx-menu" class="ctx-menu hidden"></div>
+
+<!-- 通用确认弹窗（替代原生 confirm：自适应内容、始终位于面板内容上层） -->
+<div id="confirm-overlay" class="confirm-overlay hidden">
+  <div class="confirm-box">
+    <div class="confirm-text" id="confirm-text"></div>
+    <div class="confirm-actions">
+      <button id="btn-confirm-cancel" class="btn btn-ghost btn-sm">取消</button>
+      <button id="btn-confirm-ok" class="btn btn-primary btn-sm">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 图片裁剪弹窗（§7.5）：上传后先裁剪、确定再生效；全程只读源文件，不做任何写回 -->
+<div id="crop-overlay" class="confirm-overlay hidden">
+  <div class="crop-box">
+    <div class="crop-title" id="crop-title">裁剪图片</div>
+    <div class="crop-stage" id="crop-stage">
+      <img id="crop-img" alt="">
+      <div class="crop-frame" id="crop-frame">
+        <!-- 覆盖层与矩形外沿严格重合，四角圆点按 0/100% 定位即可精确压在外角上 -->
+        <div class="crop-frame-in">
+          <span class="crop-handle" data-h="nw"></span>
+          <span class="crop-handle" data-h="ne"></span>
+          <span class="crop-handle" data-h="sw"></span>
+          <span class="crop-handle" data-h="se"></span>
+        </div>
+      </div>
+    </div>
+    <div class="crop-hint" id="crop-hint">拖动方框选择区域，拖四角调整大小；确定后生效</div>
+    <div class="crop-actions">
+      <button id="btn-crop-cancel" class="btn btn-ghost btn-sm">取消</button>
+      <button id="btn-crop-reset" class="btn btn-ghost btn-sm">重置</button>
+      <button id="btn-crop-ok" class="btn btn-primary btn-sm">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 窗口缩放命中层（§8.2.6）：WebView2 铺满客户区，左右下边框需由页面命中后交给系统原生缩放 -->
+<div id="resize-layer">
+  <div class="rz rz-l" data-edge="left"></div>
+  <div class="rz rz-r" data-edge="right"></div>
+  <div class="rz rz-b" data-edge="bottom"></div>
+  <div class="rz rz-bl" data-edge="bottom-left"></div>
+  <div class="rz rz-br" data-edge="bottom-right"></div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
