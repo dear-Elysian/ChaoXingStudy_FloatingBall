@@ -2,7 +2,7 @@
 
 一个面向 Windows 的学习通桌面悬浮球。程序复用用户在内嵌网页中的学习通登录状态，集中查看课程作业、随堂练习、考试、主题讨论和消息，并按需手动刷新。
 
-程序以只读展示为主，不会自动提交作业或自动刷课。AI 帮做功能可将生成的答案填入作业或练习页面，内容应由用户检查并自行决定是否提交。
+程序以只读展示为主，不会自动提交作业或自动刷课。AI 帮做功能目前仅适用于作业和随堂练习，可将生成的答案填入页面，内容应由用户检查并自行决定是否提交。使用 AI 功能需要自行填写 API 接口和 API Key。项目开发过程中使用了 DeepSeek-V4.1-Flash 和 Kimi-K3。
 
 > 项目当前仍在开发中，功能和使用方式可能变化。完整需求、目录约定和技术设计见[方案设计文档](./方案设计(未全部完成).md)。
 
@@ -14,9 +14,14 @@
 - 可配置兼容 OpenAI 风格接口的 AI 服务，用于辅助填写作业和练习答案。
 - 便携式打包：随包提供裁剪后的 Java 运行时和自包含 .NET 程序，不要求使用者另装 Java 或 .NET。
 
+## 免责声明
+
+- 本项目仅供学习交流和技术演示使用，请勿用于违法违规用途。
+- 使用本程序所产生的后果由使用者自行承担。
+
 ## 下载与运行
 
-从仓库的 [Releases](https://github.com/dear-Elysian/xuexitong_Projects/releases) 下载对应版本的 ZIP，解压后运行：
+从仓库的 [Releases](https://github.com/dear-Elysian/ChaoXingStudy_FloatingBall/releases) 下载对应版本的 ZIP，解压后运行：
 
 ```text
 学习通悬浮球/app/launcher.exe
@@ -34,6 +39,13 @@
 
 ## 从源码构建
 
+使用 Git 克隆源码：
+
+```powershell
+git clone https://github.com/dear-Elysian/ChaoXingStudy_FloatingBall.git
+Set-Location .\ChaoXingStudy_FloatingBall
+```
+
 ### 开发环境
 
 - Windows x64
@@ -42,7 +54,7 @@
 - Apache Maven，且 `mvn` 可从 `PATH` 调用
 - Microsoft Edge WebView2 Runtime
 
-### 构建便携包
+### 构建便携包（也可直接从 Releases 下载）
 
 在项目根目录打开 PowerShell，运行：
 
