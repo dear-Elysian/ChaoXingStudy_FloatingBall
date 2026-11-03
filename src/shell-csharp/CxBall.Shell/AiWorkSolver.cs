@@ -427,6 +427,8 @@ static class AiWorkSolver
             const size = el.querySelector('input[name="tiankongsize' + qid + '"]');
             if (size) blanks = parseInt(size.value || '0', 10) || 0;
             if (!blanks) blanks = el.querySelectorAll('[id^="answerEditor' + qid + '"]').length;
+            // 整题只有一个 #answer<qid> 编辑器的模板（本次作业页）按 1 个空处理
+            if (!blanks && el.querySelector('#answer' + qid)) blanks = 1;
             let attach = 0;
             el.querySelectorAll('img, a[href], video, audio, iframe, object, embed, input[type=file]').forEach((x) => {
               if (x.closest('.edui-editor, .edui, .edui-editor-iframeholder, .eidtDiv')) return;
@@ -458,9 +460,23 @@ static class AiWorkSolver
           const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
           // UEditor 是异步渲染的：实例先出现，body/iframe 稍后才就绪，过早 setContent 会抛
           // “Cannot read properties of null (reading 'style')”。写之前统一等编辑器就绪。
-          const deadline = Date.now() + 6000;
+          // 已存在的实例优先：UE.getEditor 对不存在的 id 会新建空实例，不能盲调
+          const findEditor = (id) => {
+            const inst = window.UE && UE.instants ? UE.instants : {};
+            for (const k in inst) {
+              const ed = inst[k];
+              if (ed && (ed.key === id || (ed.textarea && ed.textarea.id === id))) return ed;
+            }
+            return null;
+          };
           const waitEditor = async (id) => {
-            const ed = window.UE && UE.getEditor ? UE.getEditor(id) : null;
+            // 每题独立计时：共享 deadline 会让后面的题在等待超时后直接判失败
+            const deadline = Date.now() + 6000;
+            let ed = findEditor(id);
+            if (!ed) {
+              if (!document.getElementById(id)) return null;
+              try { ed = window.UE && UE.getEditor ? UE.getEditor(id) : null; } catch (e) { ed = null; }
+            }
             if (!ed) return null;
             while (!(ed.isReady && ed.body && ed.iframe) && Date.now() < deadline) await sleep(150);
             return (ed.body && ed.iframe) ? ed : null;
@@ -526,7 +542,35 @@ static class AiWorkSolver
                 continue;
               }
               if (p.type === 'fill') {
-                // 页面只有 1 个空时（tiankongsize=1）整段答案直接写入，不再按 | 拆分
+                // 模板 B：整题只有一个 #answer<qid> 大编辑器（本次作业页），整段写入
+                const partIds = [...el.querySelectorAll('[id^="answerEditor' + p.qid + '"]')];
+                if (partIds.length === 0 && document.getElementById('answer' + p.qid)) {
+                  const ed = await waitEditor('answer' + p.qid);
+                  let ok = false;
+                  let got = '';
+                  if (ed) {
+                    try {
+                      ed.setContent('<p>' + esc(p.answer || '') + '</p>');
+                      const txt = (ed.getContent() || '').replace(/<[^>]*>/g, '').trim();
+                      ok = txt.length > 0;
+                      got = '已填 ' + txt.length + ' 字';
+                    } catch (e) {
+                      got = '写入异常：' + (e && e.message ? e.message : e);
+                    }
+                  } else {
+                    const ta = document.getElementById('answer' + p.qid);
+                    if (ta) {
+                      ta.value = p.answer || '';
+                      ta.dispatchEvent(new Event('input', { bubbles: true }));
+                      ta.dispatchEvent(new Event('change', { bubbles: true }));
+                      ok = ta.value.trim().length > 0;
+                      got = '已填 ' + ta.value.length + ' 字';
+                    }
+                  }
+                  out.push({ qid: p.qid, no: p.no, ok: ok, got: got, why: ok ? '' : '答题编辑器未就绪' });
+                  continue;
+                }
+                // 模板 A：多个独立空位 answerEditor<qid><n>；只有 1 个空时整段写入，不按 | 拆分
                 const single = (p.blanks || 1) <= 1;
                 const parts = single
                   ? [p.answer || '']
