@@ -68,8 +68,8 @@ sealed class OpenAiCompatibleAdapter : IAiProvider
     public string Id => "openai-compatible";
 
     static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(20) };
-    /// <summary>作答请求可能包含多道简答题，单独放宽到 120s，不影响「测试模型」的 20s 超时。</summary>
-    static readonly HttpClient ChatHttp = new() { Timeout = TimeSpan.FromSeconds(120) };
+    /// <summary>作答请求可能包含多道简答题或较长思维链，单独放宽到 240s，不影响「测试模型」的 20s 超时。</summary>
+    static readonly HttpClient ChatHttp = new() { Timeout = TimeSpan.FromSeconds(240) };
 
     public async Task<string?> DetectModelAsync(string baseUrl, string apiKey, CancellationToken ct)
     {
@@ -209,6 +209,10 @@ sealed class OpenAiCompatibleAdapter : IAiProvider
 
         HttpResponseMessage resp;
         try { resp = await ChatHttp.SendAsync(req, ct); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw new CoreException("AI_CANCELLED", "已终止本次 AI 作答", false);
+        }
         catch (TaskCanceledException)
         {
             throw new CoreException("AI_NETWORK", "作答请求超时，请检查网络或接口地址", false);
@@ -248,7 +252,7 @@ sealed class OpenAiCompatibleAdapter : IAiProvider
                 if (JsonNode.Parse(text) is JsonObject cut
                     && cut["choices"] is JsonArray { Count: > 0 } cs
                     && (cs[0]?["finish_reason"]?.GetValue<string>() ?? "") == "length")
-                    throw new CoreException("AI_TRUNCATED", "模型输出被长度限制截断，请减少题目数量后重试", false);
+                    throw new CoreException("AI_TRUNCATED", "模型输出被长度限制截断，请重试；若反复失败，可在设置中关闭「启用思考链」", false);
             }
             catch (CoreException) { throw; }
             catch { }
@@ -430,6 +434,18 @@ static class AiService
         var thinking = s["aiThinking"]?.GetValue<bool>() ?? false;
         var r = await Provider.ChatAsync(endpoint, key, model, systemPrompt, userPrompt, maxTokens, thinking, ct);
         return (model, r.Text, r.PromptTokens, r.CompletionTokens);
+    }
+
+    /// <summary>
+    /// 当前是否真正以思考模式请求：设置里开启，且接口是 DeepSeek（只有该端点会发 thinking 字段）。
+    /// 思考模式下思维链与答案共用 max_tokens，作答预算需要据此额外预留。
+    /// </summary>
+    public static bool ThinkingActive()
+    {
+        var s = Settings.Get();
+        return (s["aiThinking"]?.GetValue<bool>() ?? false)
+               && (s["aiEndpoint"]?.GetValue<string>() ?? "")
+                   .Contains("deepseek.com", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>AI帮做前置校验：开关、地址、Key 任一缺失都返回明确错误码供前端引导。</summary>

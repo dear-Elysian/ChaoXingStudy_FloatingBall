@@ -290,6 +290,11 @@ body {
 .confirm-text { white-space: pre-line; line-height: 1.7; margin-bottom: 14px; }
 .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
+/* ---------- AI帮做进度弹窗（§7.9）：替代长 Toast，显示预计耗时并可终止 ---------- */
+.ai-progress-title { font-weight: bold; margin-bottom: 10px; }
+.ai-progress-eta { font-size: 15px; font-weight: 600; color: var(--accent); margin-bottom: 6px; }
+.ai-progress-text { color: var(--muted); font-size: 12px; line-height: 1.6; margin-bottom: 14px; white-space: pre-line; }
+
 /* ---------- 图片裁剪弹窗（§7.5）：上传后先裁剪、确定再生效 ---------- */
 .crop-box {
   background: #fff; border-radius: 12px; padding: 14px 16px;

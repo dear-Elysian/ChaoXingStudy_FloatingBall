@@ -86,12 +86,14 @@ function hideToast() {
 }
 
 // ---------- 通用确认弹窗（替代原生 confirm：自适应内容、位于面板内容上层；danger=红色确定键） ----------
-function cxConfirm(msg, danger = false) {
+function cxConfirm(msg, danger = false, okText = "确定", cancelText = "取消") {
   return new Promise((resolve) => {
     const overlay = $("confirm-overlay");
     $("confirm-text").textContent = msg;
     const ok = $("btn-confirm-ok");
     ok.className = "btn btn-sm " + (danger ? "btn-danger" : "btn-primary");
+    ok.textContent = okText;
+    $("btn-confirm-cancel").textContent = cancelText;
     overlay.classList.remove("hidden");
     const done = (v) => { overlay.classList.add("hidden"); resolve(v); };
     ok.onclick = () => done(true);
@@ -99,6 +101,31 @@ function cxConfirm(msg, danger = false) {
     overlay.onclick = (e) => { if (e.target === overlay) done(false); };
   });
 }
+
+// ---------- AI帮做进度弹窗（§7.9）：显示预计耗时，可强制终止 ----------
+// 预计不足 1 分钟显示秒数，否则向上取整到分钟
+function fmtEta(sec) {
+  const s = Math.max(0, Math.round(sec));
+  return s < 60 ? `${s} 秒` : `${Math.ceil(s / 60)} 分钟`;
+}
+function showAiProgress(p = {}) {
+  const overlay = $("ai-progress-overlay");
+  overlay.classList.remove("hidden");
+  const btn = $("btn-ai-progress-cancel");
+  btn.disabled = false;
+  btn.textContent = "终止";
+  $("ai-progress-eta").textContent = (p.etaSeconds || 0) > 0
+    ? `预计 ${fmtEta(p.etaSeconds)}`
+    : "预计时间计算中…";
+  $("ai-progress-text").textContent = p.text || "正在准备…";
+}
+function hideAiProgress() { $("ai-progress-overlay").classList.add("hidden"); }
+$("btn-ai-progress-cancel").onclick = async () => {
+  const btn = $("btn-ai-progress-cancel");
+  btn.disabled = true;
+  btn.textContent = "终止中…";
+  try { await bridge.call("ai.solve.cancel"); } catch { }
+};
 
 // ---------- 作业分类（§v1.4） ----------
 function classify() {
@@ -597,11 +624,11 @@ async function openAiSolve(it) {
   if (!it.link) { toast("该条目缺少详情链接，请刷新后重试"); return; }
   if (S.aiSolving) { toast("AI 正在作答，请稍候…"); return; }
   S.aiSolving = true;
-  toast("正在准备 AI帮做…", 120000);
+  showAiProgress({ text: "正在准备 AI 帮做…" });
   try {
     const kind = it.type === "practice" ? "practice" : "assignment";
     const r = await bridge.call("ai.solve", { url: it.link, kind });
-    hideToast();   // 结束即收起进度长提示，随后只显示结果
+    hideAiProgress();   // 结束即收起进度弹窗，随后只显示结果
     let msg = r.message || `AI 已填写 ${r.filled || 0} 题。请在浏览器中检查答案后手动提交。`;
     const used = (r.promptTokens || 0) + (r.completionTokens || 0);
     if (used > 0) msg += `\n本次消耗 ${used} tokens（输入 ${r.promptTokens || 0} / 输出 ${r.completionTokens || 0}）。`;
@@ -609,8 +636,10 @@ async function openAiSolve(it) {
     if (notes.length) await cxConfirm(msg + "\n\n" + notes.join("\n"));
     else toast(msg, 8000);
   } catch (e) {
-    hideToast();   // 失败时同样立即收起进度长提示，避免残留在界面上
-    if (e.code === "AI_DISABLED" || e.code === "AI_NOT_CONFIGURED") {
+    hideAiProgress();   // 失败时同样立即收起进度弹窗，避免残留在界面上
+    if (e.code === "AI_CANCELLED") {
+      toast("已终止本次 AI 帮做");
+    } else if (e.code === "AI_DISABLED" || e.code === "AI_NOT_CONFIGURED") {
       if (await cxConfirm(e.message + "\n是否现在前往设置配置？")) {
         renderSettings();
         switchView("view-panel", "view-settings");
@@ -631,6 +660,7 @@ async function openAiSolve(it) {
       toast(e.message || "AI帮做失败");
     }
   } finally {
+    hideAiProgress();
     S.aiSolving = false;
   }
 }
@@ -674,9 +704,16 @@ bridge.on("fetch.progress", (p) => {
     btn.textContent = `${p.currentTitle || p.stage} ${p.done}/${p.total}`;
   }
 });
-// AI帮做阶段提示（§7.9）：准备浏览器/加载页面/请求模型/填写答案；长 Toast 覆盖整个流程
+// AI帮做进度弹窗（§7.9）：阶段 + 预计耗时；仅在本次帮做进行中更新
 bridge.on("ai.solve.progress", (p) => {
-  if (p?.text) toast(p.text, 120000);
+  if (S.aiSolving) showAiProgress(p);
+});
+// 题量过大且开启思考链（§7.9）：先确认是否继续，再决定是否把题目传给模型
+bridge.on("ai.solve.confirm", async (p) => {
+  hideAiProgress();   // 避免确认框与进度弹窗叠在一起
+  const ok = await cxConfirm("本次题量过大，继续开启思考链，token消耗会非常非常大！", true, "继续", "取消");
+  if (ok) showAiProgress({ text: "正在请求 AI 作答…" });
+  try { await bridge.call("ai.solve.decide", { ok, count: p?.count || 0 }); } catch { }
 });
 
 // ---------- AI 模型设置（§7.9，BYOK）----------

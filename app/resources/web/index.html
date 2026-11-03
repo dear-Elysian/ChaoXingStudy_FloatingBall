@@ -287,6 +287,18 @@
   </div>
 </div>
 
+<!-- AI帮做进度弹窗（§7.9）：显示阶段与预计耗时，可强制终止本次作答 -->
+<div id="ai-progress-overlay" class="confirm-overlay hidden">
+  <div class="confirm-box">
+    <div class="ai-progress-title">AI 正在答题</div>
+    <div class="ai-progress-eta" id="ai-progress-eta">预计时间计算中…</div>
+    <div class="ai-progress-text" id="ai-progress-text">正在准备…</div>
+    <div class="confirm-actions">
+      <button id="btn-ai-progress-cancel" class="btn btn-danger btn-sm">终止</button>
+    </div>
+  </div>
+</div>
+
 <!-- 图片裁剪弹窗（§7.5）：上传后先裁剪、确定再生效；全程只读源文件，不做任何写回 -->
 <div id="crop-overlay" class="confirm-overlay hidden">
   <div class="crop-box">

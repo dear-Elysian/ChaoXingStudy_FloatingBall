@@ -16,6 +16,8 @@ sealed class Bridge
     readonly JavaCore _core;
     readonly MainWindow _main;
     readonly SemaphoreSlim _refreshLock = new(1, 1);   // 防重入（§4.4）
+    CancellationTokenSource? _aiSolveCts;               // AI帮做取消令牌（§7.9）
+    TaskCompletionSource<bool>? _aiConfirmTcs;          // 题量/思考链确认结果（§7.9）
 
     /// <summary>首次登录默认勾选的课程数（§7.4）：只请求前 N 门详情，其余仅展示课程名。</summary>
     const int DefaultSelectedCourses = 10;
@@ -60,6 +62,8 @@ sealed class Bridge
                 "ai.detect" => await AiService.DetectAsync(),
                 "ai.test" => await AiService.TestAsync(),
                 "ai.solve" => await AiSolve(payload),
+                "ai.solve.decide" => AiSolveConfirm(payload),
+                "ai.solve.cancel" => AiSolveCancel(),
                 "browser.pick" => await BrowserPick(),
                 "browser.detect" => BrowserDetect(),
                 "courses.setDeselected" => CoursesSetDeselected(payload),
@@ -80,6 +84,10 @@ sealed class Bridge
         catch (CoreException ex)
         {
             Respond(id, false, null, ex.Code, ex.Message);
+        }
+        catch (OperationCanceledException)
+        {
+            Respond(id, false, null, "AI_CANCELLED", "已终止本次 AI 作答");
         }
         catch (Exception ex)
         {
@@ -447,21 +455,76 @@ sealed class Bridge
     /// </summary>
     async Task<JsonObject> AiSolve(JsonObject payload)
     {
-        var uri = ParseChaoxingUrl(payload);
-        AiService.EnsureReady();
-        var acct = CurrentAccount();
-        var cookiesJson = AccountStore.TryLoadSession(acct)
-            ?? throw new CoreException("SESSION_EXPIRED", "登录会话不存在，请重新登录", false);
+        if (_aiSolveCts != null)
+            throw new CoreException("AI_BUSY", "AI 正在作答，请稍候", false);
 
-        JsonArray cookies;
-        try { cookies = JsonNode.Parse(cookiesJson) as JsonArray ?? new JsonArray(); }
-        catch { throw new CoreException("SESSION_EXPIRED", "登录会话已损坏，请重新登录", false); }
+        var cts = new CancellationTokenSource();
+        _aiSolveCts = cts;
+        try
+        {
+            var uri = ParseChaoxingUrl(payload);
+            AiService.EnsureReady();
+            var acct = CurrentAccount();
+            var cookiesJson = AccountStore.TryLoadSession(acct)
+                ?? throw new CoreException("SESSION_EXPIRED", "登录会话不存在，请重新登录", false);
 
-        var progress = new Action<string>(text =>
-            SendEvent("ai.solve.progress", new JsonObject { ["text"] = text }));
-        return payload["kind"]?.GetValue<string>() == "practice"
-            ? await AiQuizSolver.SolveAsync(uri, cookies, progress)
-            : await AiWorkSolver.SolveAsync(uri, cookies, progress);
+            JsonArray cookies;
+            try { cookies = JsonNode.Parse(cookiesJson) as JsonArray ?? new JsonArray(); }
+            catch { throw new CoreException("SESSION_EXPIRED", "登录会话已损坏，请重新登录", false); }
+
+            var progress = new Action<AiWorkSolver.AiProgress>(p =>
+                SendEvent("ai.solve.progress", new JsonObject
+                {
+                    ["text"] = p.Text,
+                    ["batch"] = p.Batch,
+                    ["batches"] = p.Batches,
+                    ["etaSeconds"] = p.EtaSeconds,
+                }));
+            return payload["kind"]?.GetValue<string>() == "practice"
+                ? await AiQuizSolver.SolveAsync(uri, cookies, progress, ConfirmLargeSolveAsync, cts.Token)
+                : await AiWorkSolver.SolveAsync(uri, cookies, progress, ConfirmLargeSolveAsync, cts.Token);
+        }
+        finally
+        {
+            _aiConfirmTcs?.TrySetResult(false);
+            if (ReferenceEquals(_aiSolveCts, cts)) _aiSolveCts = null;
+            cts.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// 题量过大且开启思考链时（由 AskAiAsync 触发）：向前端弹确认框，等用户决定是否继续。
+    /// 120 秒内无响应按取消处理，避免 C# 侧永久挂起。
+    /// </summary>
+    async Task<bool> ConfirmLargeSolveAsync(int count)
+    {
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _aiConfirmTcs = tcs;
+        SendEvent("ai.solve.confirm", new JsonObject
+        {
+            ["count"] = count,
+            ["threshold"] = AiWorkSolver.LargeSolveThreshold,
+        });
+
+        var timeout = Task.Delay(TimeSpan.FromSeconds(120));
+        var done = await Task.WhenAny(tcs.Task, timeout);
+        if (ReferenceEquals(_aiConfirmTcs, tcs)) _aiConfirmTcs = null;
+        return done == tcs.Task && tcs.Task.Result;
+    }
+
+    /// <summary>前端确认结果：true=继续作答，false=取消本次帮做。</summary>
+    JsonObject AiSolveConfirm(JsonObject payload)
+    {
+        _aiConfirmTcs?.TrySetResult(payload["ok"]?.GetValue<bool>() ?? false);
+        return new JsonObject();
+    }
+
+    /// <summary>前端点「终止」：取消当前 AI 请求并释放等待中的确认框。</summary>
+    JsonObject AiSolveCancel()
+    {
+        _aiConfirmTcs?.TrySetResult(false);
+        try { _aiSolveCts?.Cancel(); } catch (ObjectDisposedException) { }
+        return new JsonObject();
     }
 
     static Uri ParseChaoxingUrl(JsonObject payload)

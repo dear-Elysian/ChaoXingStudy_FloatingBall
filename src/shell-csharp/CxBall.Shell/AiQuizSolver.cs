@@ -11,24 +11,27 @@ namespace CxBall.Shell;
 /// </summary>
 static class AiQuizSolver
 {
-    /// <summary>右键「AI帮做」主流程（随堂练习）。progress 用于向前端推送阶段提示。</summary>
-    public static async Task<JsonObject> SolveAsync(Uri url, JsonArray cookies, Action<string>? progress)
+    /// <summary>右键「AI帮做」主流程（随堂练习）。progress 用于向前端推送阶段提示与预计耗时。</summary>
+    public static async Task<JsonObject> SolveAsync(Uri url, JsonArray cookies, Action<AiWorkSolver.AiProgress>? progress,
+        Func<int, Task<bool>>? confirmLarge, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         var exe = AiWorkSolver.RequireChromiumBrowser();
 
-        progress?.Invoke("正在启动作答浏览器…");
+        progress?.Invoke(new AiWorkSolver.AiProgress("正在启动作答浏览器…"));
         var port = await AiWorkSolver.EnsureBrowserAsync(exe);
         var wsUrl = await AiWorkSolver.EnsurePageTargetAsync(port, url.AbsoluteUri);
 
         await using var cdp = await CdpClient.ConnectAsync(wsUrl, TimeSpan.FromSeconds(10));
         var cookieErrors = await AiWorkSolver.PrepareSessionAsync(cdp, cookies);
 
-        progress?.Invoke("正在打开练习页面…");
+        progress?.Invoke(new AiWorkSolver.AiProgress("正在打开练习页面…"));
         await cdp.CallAsync("Page.enable", null, 15000);
         await cdp.CallAsync("Page.navigate", new JsonObject { ["url"] = url.AbsoluteUri }, 20000);
+        try { await cdp.CallAsync("Page.bringToFront", null, 5000); } catch (CoreException) { }
 
-        progress?.Invoke("正在等待题目加载…");
-        var page = await WaitForQuizAsync(cdp, 45000);
+        progress?.Invoke(new AiWorkSolver.AiProgress("正在等待题目加载…"));
+        var page = await WaitForQuizAsync(cdp, 45000, ct);
         var href = page["url"]?.GetValue<string>() ?? "";
         if (page["login"]?.GetValue<bool>() == true || href.Contains("passport2", StringComparison.OrdinalIgnoreCase))
             throw new CoreException("SESSION_EXPIRED", "学习通登录态已失效，请先在应用内重新登录后再使用 AI帮做", false);
@@ -48,8 +51,12 @@ static class AiQuizSolver
                     ? "练习页面未加载出题目，且部分登录 Cookie 写入失败，请重新登录后再试"
                     : "练习页面加载超时或未找到题目，请确认该练习仍可作答", false);
 
-        progress?.Invoke("正在读取题目…");
-        var extracted = await cdp.EvaluateAsync(ExtractJs, 20000) as JsonArray ?? new JsonArray();
+        progress?.Invoke(new AiWorkSolver.AiProgress("正在读取题目…"));
+        // 题量很大时 DOM/Vue 数据提取更慢，超时按题量放宽
+        var nodes = page["n"]?.GetValue<int>() ?? 0;
+        var extractTimeout = Math.Max(20000, nodes * 20);
+        var extracted = await cdp.EvaluateAsync(ExtractJs, extractTimeout) as JsonArray ?? new JsonArray();
+        ct.ThrowIfCancellationRequested();
         var all = extracted.OfType<JsonObject>().ToList();
         if (all.Count == 0)
             throw new CoreException("AI_NO_QUESTIONS", "该练习没有可作答的题目", false);
@@ -109,12 +116,11 @@ static class AiQuizSolver
             throw new CoreException("AI_NO_QUESTIONS",
                 "没有找到可交给 AI 作答的题目（仅支持选择/判断/填空/简答；含图片、附件或需要画图的题目会跳过）", false);
 
-        progress?.Invoke("正在请求 AI 作答…");
-        var (systemPrompt, userPrompt, maxTokens) = AiWorkSolver.BuildPrompt(ask, QuizSystemPrompt);
-        var (model, text, promptTokens, completionTokens) =
-            await AiService.ChatAsync(systemPrompt, userPrompt, maxTokens, CancellationToken.None);
-
-        var answers = AiWorkSolver.ParseAnswers(text, ask.Count);
+        var ai = await AiWorkSolver.AskAiAsync(ask, QuizSystemPrompt, progress, confirmLarge, ct);
+        var model = ai.Model;
+        var promptTokens = ai.PromptTokens;
+        var completionTokens = ai.CompletionTokens;
+        var answers = ai.Answers;
         var plan = new JsonArray();
         var missing = 0;
         for (var i = 0; i < ask.Count; i++)
@@ -138,9 +144,12 @@ static class AiQuizSolver
             });
         }
 
-        progress?.Invoke("正在填写答案…");
+        progress?.Invoke(new AiWorkSolver.AiProgress("正在填写答案…"));
+        ct.ThrowIfCancellationRequested();
+        // 写入超时按题量放宽（每题 50ms 起算，最少 30 秒，不设上限）
+        var applyTimeout = Math.Max(30000, plan.Count * 50);
         var applied = plan.Count > 0
-            ? await cdp.EvaluateAsync("(" + ApplyJs + ")(" + plan.ToJsonString() + ")", 30000) as JsonArray ?? new JsonArray()
+            ? await cdp.EvaluateAsync("(" + ApplyJs + ")(" + plan.ToJsonString() + ")", applyTimeout) as JsonArray ?? new JsonArray()
             : new JsonArray();
 
         var filled = 0;
@@ -181,12 +190,13 @@ static class AiQuizSolver
     // ---------- 页面脚本 ----------
 
     /// <summary>等待随堂练习页的 Vue 实例完成题目加载；跳登录页/结果页/不可作答时提前返回。</summary>
-    static async Task<JsonObject> WaitForQuizAsync(CdpClient cdp, int timeoutMs)
+    static async Task<JsonObject> WaitForQuizAsync(CdpClient cdp, int timeoutMs, CancellationToken ct)
     {
         var deadline = DateTimeOffset.Now.AddMilliseconds(timeoutMs);
         JsonObject last = new();
         while (DateTimeOffset.Now < deadline)
         {
+            ct.ThrowIfCancellationRequested();
             try
             {
                 var v = await cdp.EvaluateAsync("""
@@ -219,7 +229,7 @@ static class AiQuizSolver
                 if ((last["n"]?.GetValue<int>() ?? 0) > 0) return last;
             }
             catch (CoreException) { /* 导航过程中执行上下文会被销毁，继续重试 */ }
-            await Task.Delay(400);
+            await Task.Delay(400, ct);
         }
         return last;
     }

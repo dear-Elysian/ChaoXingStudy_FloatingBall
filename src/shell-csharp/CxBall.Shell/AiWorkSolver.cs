@@ -23,24 +23,28 @@ static class AiWorkSolver
     // 只用 3 秒超时探测调试端口是否已就绪（浏览器启动本身另有 20 秒等待）
     static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(3) };
 
-    /// <summary>右键「AI帮做」主流程。progress 用于向前端推送阶段提示。</summary>
-    public static async Task<JsonObject> SolveAsync(Uri url, JsonArray cookies, Action<string>? progress)
+    /// <summary>右键「AI帮做」主流程。progress 用于向前端推送阶段提示与预计耗时。</summary>
+    public static async Task<JsonObject> SolveAsync(Uri url, JsonArray cookies, Action<AiProgress>? progress,
+        Func<int, Task<bool>>? confirmLarge, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         var exe = RequireChromiumBrowser();
 
-        progress?.Invoke("正在启动作答浏览器…");
+        progress?.Invoke(new AiProgress("正在启动作答浏览器…"));
         var port = await EnsureBrowserAsync(exe);
         var wsUrl = await EnsurePageTargetAsync(port, url.AbsoluteUri);
 
         await using var cdp = await CdpClient.ConnectAsync(wsUrl, TimeSpan.FromSeconds(10));
         var cookieErrors = await PrepareSessionAsync(cdp, cookies);
 
-        progress?.Invoke("正在打开作业页面…");
+        progress?.Invoke(new AiProgress("正在打开作业页面…"));
         await cdp.CallAsync("Page.enable", null, 15000);
         await cdp.CallAsync("Page.navigate", new JsonObject { ["url"] = url.AbsoluteUri }, 20000);
+        // 后台标签页会节流 UEditor 初始化，把作答页切到前台再等题目
+        try { await cdp.CallAsync("Page.bringToFront", null, 5000); } catch (CoreException) { }
 
-        progress?.Invoke("正在等待题目加载…");
-        var page = await WaitForQuestionsAsync(cdp, 45000);
+        progress?.Invoke(new AiProgress("正在等待题目加载…"));
+        var page = await WaitForQuestionsAsync(cdp, 45000, ct);
         if (page["login"]?.GetValue<bool>() == true)
             throw new CoreException("SESSION_EXPIRED", "学习通登录态已失效，请先在应用内重新登录", false);
         if ((page["n"]?.GetValue<int>() ?? 0) == 0)
@@ -49,8 +53,12 @@ static class AiWorkSolver
                     ? "作业页面未加载出题目，且部分登录 Cookie 写入失败，请重新登录后再试"
                     : "作业页面加载超时或未找到题目，请确认该作业仍可作答", false);
 
-        progress?.Invoke("正在读取题目…");
-        var extracted = await cdp.EvaluateAsync(ExtractJs, 20000) as JsonArray ?? new JsonArray();
+        progress?.Invoke(new AiProgress("正在读取题目…"));
+        var nodes = page["n"]?.GetValue<int>() ?? 0;
+        // 超大作业的 DOM 遍历耗时随题量增长，提取超时跟着放宽
+        var extractTimeout = Math.Max(20000, nodes * 20);
+        var extracted = await cdp.EvaluateAsync(ExtractJs, extractTimeout) as JsonArray ?? new JsonArray();
+        ct.ThrowIfCancellationRequested();
         var all = extracted.OfType<JsonObject>().ToList();
         var writable = all.Where(q => q["editable"]?.GetValue<bool>() == true).ToList();
         if (writable.Count == 0)
@@ -96,12 +104,11 @@ static class AiWorkSolver
         if (ask.Count == 0)
             throw new CoreException("AI_NO_QUESTIONS", "没有找到可交给 AI 作答的题目（仅支持选择题/判断题/填空题/简答题）", false);
 
-        progress?.Invoke("正在请求 AI 作答…");
-        var (systemPrompt, userPrompt, maxTokens) = BuildPrompt(ask);
-        var (model, text, promptTokens, completionTokens) =
-            await AiService.ChatAsync(systemPrompt, userPrompt, maxTokens, CancellationToken.None);
-
-        var answers = ParseAnswers(text, ask.Count);
+        var ai = await AskAiAsync(ask, null, progress, confirmLarge, ct);
+        var model = ai.Model;
+        var promptTokens = ai.PromptTokens;
+        var completionTokens = ai.CompletionTokens;
+        var answers = ai.Answers;
         var plan = new JsonArray();
         var missing = 0;
         for (var i = 0; i < ask.Count; i++)
@@ -124,9 +131,12 @@ static class AiWorkSolver
             });
         }
 
-        progress?.Invoke("正在填写答案…");
+        progress?.Invoke(new AiProgress("正在填写答案…"));
+        ct.ThrowIfCancellationRequested();
+        // 写入超时按题量放宽（每题 50ms 起算，最少 30 秒，不设上限）
+        var applyTimeout = Math.Max(30000, plan.Count * 50);
         var applied = plan.Count > 0
-            ? await cdp.EvaluateAsync("(" + ApplyJs + ")(" + plan.ToJsonString() + ")", 30000) as JsonArray ?? new JsonArray()
+            ? await cdp.EvaluateAsync("(" + ApplyJs + ")(" + plan.ToJsonString() + ")", applyTimeout) as JsonArray ?? new JsonArray()
             : new JsonArray();
 
         var filled = 0;
@@ -338,12 +348,13 @@ static class AiWorkSolver
         => Path.Combine(Paths.DataDir, "config", "ai-browser-" + Path.GetFileNameWithoutExtension(exe).ToLowerInvariant() + ".json");
 
     /// <summary>等待题目 DOM 出现；若跳转到登录页则提前返回。</summary>
-    static async Task<JsonObject> WaitForQuestionsAsync(CdpClient cdp, int timeoutMs)
+    static async Task<JsonObject> WaitForQuestionsAsync(CdpClient cdp, int timeoutMs, CancellationToken ct)
     {
         var deadline = DateTimeOffset.Now.AddMilliseconds(timeoutMs);
         JsonObject last = new();
         while (DateTimeOffset.Now < deadline)
         {
+            ct.ThrowIfCancellationRequested();
             try
             {
                 var v = await cdp.EvaluateAsync("""
@@ -359,7 +370,7 @@ static class AiWorkSolver
                 if ((last["n"]?.GetValue<int>() ?? 0) > 0 || last["login"]?.GetValue<bool>() == true) return last;
             }
             catch (CoreException) { /* 导航过程中执行上下文会被销毁，继续重试 */ }
-            await Task.Delay(400);
+            await Task.Delay(400, ct);
         }
         return last;
     }
@@ -438,12 +449,22 @@ static class AiWorkSolver
     /// 填空题写 UEditor 空位，简答题写 UEditor 正文；全部按页面原有事件链触发。
     /// </summary>
     const string ApplyJs = """
-        (plan) => {
+        async (plan) => {
           const out = [];
           const letterOf = (o) => { const n = o.querySelector('.num_option, .num_option_dx'); return n ? (n.getAttribute('data') || '') : ''; };
           const selected = (o) => !!(o.querySelector('.num_option.check_answer, .num_option_dx.check_answer_dx'));
           const pick = (opts, letter) => opts.find((o) => letterOf(o).toUpperCase() === letter);
           const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+          // UEditor 是异步渲染的：实例先出现，body/iframe 稍后才就绪，过早 setContent 会抛
+          // “Cannot read properties of null (reading 'style')”。写之前统一等编辑器就绪。
+          const deadline = Date.now() + 6000;
+          const waitEditor = async (id) => {
+            const ed = window.UE && UE.getEditor ? UE.getEditor(id) : null;
+            if (!ed) return null;
+            while (!(ed.isReady && ed.body && ed.iframe) && Date.now() < deadline) await sleep(150);
+            return (ed.body && ed.iframe) ? ed : null;
+          };
           for (const p of plan) {
             const el = document.querySelector('div.questionLi[data="' + p.qid + '"]');
             if (!el) { out.push({ qid: p.qid, no: p.no, ok: false, why: '题目节点已失效' }); continue; }
@@ -505,15 +526,24 @@ static class AiWorkSolver
                 continue;
               }
               if (p.type === 'fill') {
-                const parts = (p.answer || '').split(/[|｜]/).map((s) => s.trim());
+                // 页面只有 1 个空时（tiankongsize=1）整段答案直接写入，不再按 | 拆分
+                const single = (p.blanks || 1) <= 1;
+                const parts = single
+                  ? [p.answer || '']
+                  : (p.answer || '').split(/[|｜]/).map((s) => s.trim());
                 let filled = 0;
+                let missed = 0;
                 const n = Math.max(p.blanks || 0, parts.length);
                 for (let i = 1; i <= n; i++) {
                   const id = 'answerEditor' + p.qid + i;
-                  const ed = window.UE && UE.getEditor ? UE.getEditor(id) : null;
-                  if (ed) {
-                    ed.setContent('<p>' + esc(parts[i - 1] || '') + '</p>');
-                    if ((ed.getContent() || '').replace(/<[^>]*>/g, '').trim().length > 0) filled++;
+                  if (document.getElementById(id)) {
+                    const ed = await waitEditor(id);
+                    try {
+                      if (!ed) throw new Error('编辑器未就绪');
+                      ed.setContent('<p>' + esc(parts[i - 1] || '') + '</p>');
+                      if ((ed.getContent() || '').replace(/<[^>]*>/g, '').trim().length > 0) filled++;
+                      else missed++;
+                    } catch (e) { missed++; }
                     continue;
                   }
                   const inputs = [...el.querySelectorAll('input[type=text], input:not([type]), textarea')].filter((x) => x.id !== ('answer' + p.qid));
@@ -522,13 +552,18 @@ static class AiWorkSolver
                     inputs[i - 1].dispatchEvent(new Event('input', { bubbles: true }));
                     inputs[i - 1].dispatchEvent(new Event('change', { bubbles: true }));
                     filled++;
-                  }
+                  } else missed++;
                 }
-                out.push({ qid: p.qid, no: p.no, ok: filled > 0 && filled >= (p.blanks || 1), got: '已填 ' + filled + '/' + (p.blanks || n) + ' 空' });
+                out.push({
+                  qid: p.qid, no: p.no,
+                  ok: missed === 0 && filled > 0,
+                  got: '已填 ' + filled + '/' + n + ' 空' + (missed > 0 ? '（' + missed + ' 空未写入）' : ''),
+                  why: missed === 0 ? '' : '答题编辑器未就绪',
+                });
                 continue;
               }
               if (p.type === 'short') {
-                const ed = window.UE && UE.getEditor ? UE.getEditor('answer' + p.qid) : null;
+                const ed = await waitEditor('answer' + p.qid);
                 if (ed) {
                   ed.setContent('<p>' + esc(p.answer) + '</p>');
                   const txt = (ed.getContent() || '').replace(/<[^>]*>/g, '').trim();
@@ -557,11 +592,134 @@ static class AiWorkSolver
 
     // ---------- 提示词与答案解析 ----------
 
+    /// <summary>一次分批作答的汇总结果：答案按题目在 ask 中的序号（1 起）索引。</summary>
+    internal sealed record AiAnswerSet(string Model, Dictionary<int, string> Answers, int PromptTokens, int CompletionTokens);
+
+    /// <summary>AI帮做阶段提示；Batch/Batches 为当前批次，EtaSeconds=0 表示尚无法估算。</summary>
+    internal sealed record AiProgress(string Text, int Batch = 0, int Batches = 0, int EtaSeconds = 0);
+
+    /// <summary>题量超过该值且开启思考链时，先让用户确认 token 消耗。</summary>
+    internal const int LargeSolveThreshold = 200;
+
+    /// <summary>
+    /// 分批向模型请求答案。思考模式会把思维链和答案一起计入 max_tokens，
+    /// 一次请求装不下太多题（实测 5 道计算题思考约 1.4 万 token），
+    /// 因此按题型估算分批；任一批仍被截断时二分重试。
+    /// </summary>
+    internal static async Task<AiAnswerSet> AskAiAsync(List<JsonObject> ask, string? systemOverride,
+        Action<AiProgress>? progress, Func<int, Task<bool>>? confirmLarge, CancellationToken ct)
+    {
+        var thinking = AiService.ThinkingActive();
+        if (thinking && ask.Count > LargeSolveThreshold && confirmLarge != null)
+        {
+            if (!await confirmLarge(ask.Count))
+                throw new CoreException("AI_CANCELLED", "已终止本次 AI 作答", false);
+        }
+
+        var batches = PlanBatches(ask);
+        var answers = new Dictionary<int, string>();
+        var model = "";
+        var promptTokens = 0;
+        var completionTokens = 0;
+        var started = Stopwatch.StartNew();
+
+        for (var i = 0; i < batches.Count; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            // 用已完成批次的平均耗时估算剩余批次；首批按每批约 1 分钟粗估，之后用实测平均修正
+            var eta = i > 0
+                ? (int)Math.Round(started.Elapsed.TotalSeconds / i * (batches.Count - i))
+                : batches.Count * 60;
+            progress?.Invoke(new AiProgress(
+                batches.Count > 1
+                    ? "正在请求 AI 作答（第 " + (i + 1) + "/" + batches.Count + " 批）…"
+                    : "正在请求 AI 作答…",
+                i + 1, batches.Count, eta));
+
+            var r = await AskBatchAsync(batches[i], ask, systemOverride, thinking, ct);
+            if (r.Model.Length > 0) model = r.Model;
+            promptTokens += r.PromptTokens;
+            completionTokens += r.CompletionTokens;
+            foreach (var kv in r.Answers) answers[kv.Key] = kv.Value;
+        }
+
+        return new AiAnswerSet(model, answers, promptTokens, completionTokens);
+    }
+
+    /// <summary>按「答案预算 4096」把题目切成批次，单批不超过该预算。</summary>
+    static List<List<int>> PlanBatches(List<JsonObject> ask)
+    {
+        const int baseCost = 400;
+        const int budget = 4096;
+        var batches = new List<List<int>>();
+        var current = new List<int>();
+        var cost = baseCost;
+        for (var i = 0; i < ask.Count; i++)
+        {
+            var c = AnswerCost(ask[i]);
+            if (current.Count > 0 && cost + c > budget)
+            {
+                batches.Add(current);
+                current = new List<int>();
+                cost = baseCost;
+            }
+            current.Add(i);
+            cost += c;
+        }
+        if (current.Count > 0) batches.Add(current);
+        return batches;
+    }
+
+    /// <summary>与 BuildPrompt 的预算口径保持一致：选择/判断少，填空按空数，简答最多。</summary>
+    static int AnswerCost(JsonObject q)
+    {
+        var type = q["type"]?.GetValue<string>() ?? "";
+        if (type is "single" or "multi" or "judge") return 12;
+        if (type == "fill") return 30 * Math.Max(1, q["blanks"]?.GetValue<int>() ?? 1);
+        return 900;
+    }
+
+    static async Task<AiAnswerSet> AskBatchAsync(List<int> batch, List<JsonObject> ask,
+        string? systemOverride, bool thinking, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var questions = batch.Select(i => ask[i]).ToList();
+        try
+        {
+            var (systemPrompt, userPrompt, maxTokens) = BuildPrompt(questions, systemOverride, thinking);
+            var (model, text, promptTokens, completionTokens) =
+                await AiService.ChatAsync(systemPrompt, userPrompt, maxTokens, ct);
+
+            var parsed = ParseAnswers(text, questions.Count);
+            var map = new Dictionary<int, string>();
+            for (var k = 1; k <= questions.Count; k++)
+                if (parsed.TryGetValue(k, out var a) && a.Length > 0)
+                    map[batch[k - 1] + 1] = a;
+            return new AiAnswerSet(model, map, promptTokens, completionTokens);
+        }
+        catch (CoreException e) when (e.Code == "AI_TRUNCATED" && batch.Count > 1)
+        {
+            ct.ThrowIfCancellationRequested();
+            var half = batch.Count / 2;
+            var first = await AskBatchAsync(batch.Take(half).ToList(), ask, systemOverride, thinking, ct);
+            var second = await AskBatchAsync(batch.Skip(half).ToList(), ask, systemOverride, thinking, ct);
+
+            var map = new Dictionary<int, string>();
+            foreach (var kv in first.Answers) map[kv.Key] = kv.Value;
+            foreach (var kv in second.Answers) map[kv.Key] = kv.Value;
+            return new AiAnswerSet(
+                second.Model.Length > 0 ? second.Model : first.Model, map,
+                first.PromptTokens + second.PromptTokens,
+                first.CompletionTokens + second.CompletionTokens);
+        }
+    }
+
     /// <summary>
     /// 控制 token：题干最多 300 字、每选项最多 120 字，只带必要上下文；
     /// 所有题目合成一次请求，输出格式固定为「题号|答案」一行一题。
+    /// thinking=true 时思维链也计入 max_tokens，需额外预留（否则答案还没开始输出就被截断）。
     /// </summary>
-    internal static (string System, string User, int MaxTokens) BuildPrompt(List<JsonObject> questions, string? systemOverride = null)
+    internal static (string System, string User, int MaxTokens) BuildPrompt(List<JsonObject> questions, string? systemOverride = null, bool thinking = false)
     {
         var sb = new StringBuilder();
         var maxTokens = 400;   // 推理型模型会先产生思考 token，预留余量（max_tokens 只是上限，不强制消耗）
@@ -609,7 +767,11 @@ static class AiWorkSolver
             "简答题只写一段话：尽量不超过300字；若题目内容确实需要更多，可放宽到500字以内；" +
             "仅当题目明确要求字数（如“不少于800字”“详细论述”）时，才按要求作答。";
 
-        maxTokens = Math.Clamp(maxTokens, 768, 4096);
+        // DeepSeek 思考模式下思维链与答案共用 max_tokens，需留足推理空间（实测 5 道计算题思考约 1.4 万）
+        if (thinking) maxTokens += 20000;
+        maxTokens = thinking
+            ? Math.Clamp(maxTokens, 8192, 32768)
+            : Math.Clamp(maxTokens, 768, 4096);
         return (systemOverride ?? assignmentSystem, sb.ToString(), maxTokens);
     }
 
