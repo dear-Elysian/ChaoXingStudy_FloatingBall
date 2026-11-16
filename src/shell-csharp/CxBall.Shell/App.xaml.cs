@@ -26,6 +26,7 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
         Paths.EnsureDataDirs();
         CacheCleaner.CheckAndClean();   // §7.6：启动时检查缓存（此时 Profile 尚未被占用，清理最干净）
         // §7.5：按设置同步开机自启动（便携版路径变化时也能指向当前 exe）

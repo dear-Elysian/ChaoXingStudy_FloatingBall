@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿# 打包便携版（方案 §6）：自包含 .NET 运行时 + jlink 裁剪 JRE
+﻿﻿﻿﻿﻿﻿﻿﻿# 打包便携版（方案 §6）：自包含 .NET 运行时 + jlink 裁剪 JRE
 # 成品输出到 学习通悬浮球\app\，不再有 dist 外层
 # 用法：powershell -ExecutionPolicy Bypass -File scripts\package.ps1
 param(

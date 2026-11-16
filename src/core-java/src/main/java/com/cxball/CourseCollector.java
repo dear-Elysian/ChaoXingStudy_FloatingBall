@@ -125,6 +125,9 @@ public class CourseCollector {
         // 第二步：课程页 hidden input 提供 workEnc / examEnc / cfid（pageHeader 必须为 8）
         String page = client.get(loc.replace("pageHeader=-1", "pageHeader=8"), LIST_REFERER);
         Document doc = Jsoup.parse(page);
+        // 课程页通用 enc（章节页等使用）；workEnc 单独保留给作业列表
+        String courseEnc = inputValue(doc, "enc");
+        if (!courseEnc.isEmpty()) course.put("courseEnc", courseEnc);
         course.put("enc", inputValue(doc, "workEnc"));
         String examEnc = inputValue(doc, "examEnc");
         if (!examEnc.isEmpty()) course.put("examEnc", examEnc);

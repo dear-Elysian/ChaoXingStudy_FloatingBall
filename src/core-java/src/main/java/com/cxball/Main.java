@@ -25,6 +25,7 @@ public class Main {
 
     private final ChaoxingClient client = new ChaoxingClient();
     private final CourseCollector courses = new CourseCollector();
+    private final BrushPlanner brushPlanner = new BrushPlanner();
     private final NoticeCollector noticeCollector = new NoticeCollector();
     /** 采集器注册表（§5.2）：新增数据类型 = 实现 Collector + 在此注册，不动主流程。 */
     private final java.util.List<Collector> collectors = java.util.List.of(
@@ -32,6 +33,7 @@ public class Main {
             new PracticeCollector(),
             new ExamCollector(),
             new DiscussionCollector(),
+            new BrushCollector(),
             noticeCollector);
     private final MetaCollector metaCollector = new MetaCollector();
     private final PrintWriter out;
@@ -116,6 +118,13 @@ public class Main {
             case "fetch.cancel" -> {
                 cancelFetch = true;
                 respond(Protocol.ok(id, type, new JSONObject()));
+            }
+
+            // 刷课规划（v3.28）：章节树 + 待完成章节任务点，由 C# 侧用本地浏览器执行
+            case "brush.plan" -> {
+                JSONObject p = new JSONObject();
+                p.put("plan", brushPlanner.plan(client, courses, payload.getString("courseId")));
+                respond(Protocol.ok(id, type, p));
             }
 
             case "sys.shutdown" -> respond(Protocol.ok(id, type, new JSONObject()));

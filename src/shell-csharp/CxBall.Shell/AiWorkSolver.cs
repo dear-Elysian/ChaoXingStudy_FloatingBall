@@ -237,6 +237,8 @@ static class AiWorkSolver
         psi.ArgumentList.Add("--no-default-browser-check");
         psi.ArgumentList.Add("--disable-features=msEdgeFirstRunExperience");
         psi.ArgumentList.Add("--remote-allow-origins=*");
+        // 刷课需要自动播放文档/视频/音频；该浏览器是自动化专用 Profile，关闭手势限制
+        psi.ArgumentList.Add("--autoplay-policy=no-user-gesture-required");
         psi.ArgumentList.Add("about:blank");
 
         try { Process.Start(psi); }
@@ -284,6 +286,22 @@ static class AiWorkSolver
         throw new CoreException("AI_BROWSER_FAILED", "没有可用的本地调试端口", false);
     }
 
+    /// <summary>新建一个空白标签页并返回其调试地址；失败返回 null。</summary>
+    internal static async Task<string?> CreatePageTargetAsync(int port)
+    {
+        try
+        {
+            using var resp = await Http.SendAsync(new HttpRequestMessage(HttpMethod.Put,
+                "http://127.0.0.1:" + port + "/json/new?about:blank"));
+            if (resp.IsSuccessStatusCode
+                && JsonNode.Parse(await resp.Content.ReadAsStringAsync()) is JsonObject created
+                && created["webSocketDebuggerUrl"]?.GetValue<string>() is string createdUrl && createdUrl.Length > 0)
+                return createdUrl;
+        }
+        catch { }
+        return null;
+    }
+
     /// <summary>找到一个可导航的 page target；优先复用已打开同一页面的标签页。</summary>
     internal static async Task<string> EnsurePageTargetAsync(int port, string pageUrl)
     {
@@ -294,15 +312,7 @@ static class AiWorkSolver
         var blank = list.FirstOrDefault(t => (t["url"]?.GetValue<string>() ?? "") is "about:blank" or "");
         if (blank?["webSocketDebuggerUrl"]?.GetValue<string>() is string blankUrl && blankUrl.Length > 0) return blankUrl;
 
-        try
-        {
-            using var resp = await Http.SendAsync(new HttpRequestMessage(HttpMethod.Put, "http://127.0.0.1:" + port + "/json/new?about:blank"));
-            if (resp.IsSuccessStatusCode
-                && JsonNode.Parse(await resp.Content.ReadAsStringAsync()) is JsonObject created
-                && created["webSocketDebuggerUrl"]?.GetValue<string>() is string createdUrl && createdUrl.Length > 0)
-                return createdUrl;
-        }
-        catch { }
+        if (await CreatePageTargetAsync(port) is string createdUrl) return createdUrl;
 
         var any = list.FirstOrDefault(t => t["webSocketDebuggerUrl"]?.GetValue<string>() is string s && s.Length > 0);
         if (any?["webSocketDebuggerUrl"]?.GetValue<string>() is string anyUrl) return anyUrl;

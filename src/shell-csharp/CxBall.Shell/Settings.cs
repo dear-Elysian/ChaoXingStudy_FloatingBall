@@ -15,7 +15,7 @@ static class Settings
         ["loginAutoRefresh"] = true,
         ["loginRefreshIntervalSec"] = 15,
         ["manualThrottleSec"] = 15,
-        ["modules"] = new JsonObject { ["assignment"] = true, ["notice"] = true, ["exam"] = false, ["practice"] = false, ["discussion"] = false },   // 首次登录只开作业/消息，其余三项按需勾选（§7.3）
+        ["modules"] = new JsonObject { ["assignment"] = true, ["notice"] = true, ["exam"] = false, ["practice"] = false, ["discussion"] = false, ["brush"] = false },   // 首次登录只开作业/消息，其余按需勾选（§7.3；刷课默认关闭）
         ["timeDisplay"] = "remainingHours",          // remainingHours | deadline | both | none（§7.5，两个独立勾选）
         ["background"] = new JsonObject { ["image"] = null, ["opacity"] = 75 },
         ["moduleOpacity"] = 100,                     // 模块卡片背景透明度 %（§7.5，统一调节，默认全不透明）

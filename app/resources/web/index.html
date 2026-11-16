@@ -77,6 +77,20 @@
         <div class="item-list" id="exam-list"></div>
       </div>
     </div>
+    <!-- 刷课模块（章节页只读刷新 + 确定后本地浏览器逐章执行；设置里默认不勾选，默认折叠） -->
+    <div class="card hidden" id="mod-brush">
+      <div class="card-title clickable" id="brush-title">刷课 <span class="muted" id="brush-arrow">▸</span></div>
+      <div class="hidden" id="brush-body">
+        <div class="row">
+          <span>请选择要刷的课</span>
+          <select id="brush-course" class="brush-select"></select>
+        </div>
+        <div class="brush-hint muted" id="brush-hint"></div>
+        <div class="brush-actions">
+          <button class="btn btn-primary" id="btn-brush-confirm">确定</button>
+        </div>
+      </div>
+    </div>
     <!-- 新模块插槽：后续采集模块在此追加 -->
   </div>
 
@@ -199,6 +213,7 @@
       <label class="row"><input type="checkbox" id="set-mod-notice"> 消息</label>
       <label class="row"><input type="checkbox" id="set-mod-exam"> 考试</label>
       <label class="row"><input type="checkbox" id="set-mod-discussion"> 主题讨论</label>
+      <label class="row"><input type="checkbox" id="set-mod-brush"> 刷课 （测试版）</label>
     </div>
 
     <div class="card">
@@ -283,6 +298,17 @@
     <div class="confirm-actions">
       <button id="btn-confirm-cancel" class="btn btn-ghost btn-sm">取消</button>
       <button id="btn-confirm-ok" class="btn btn-primary btn-sm">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 刷课进度窗口（v3.28）：第一行课程名、第二行当前章节，右下角红色终止按钮 -->
+<div id="brush-progress-overlay" class="confirm-overlay hidden">
+  <div class="confirm-box brush-progress-box">
+    <div class="brush-progress-course" id="brush-progress-course"></div>
+    <div class="brush-progress-chapter" id="brush-progress-chapter"></div>
+    <div class="brush-progress-actions">
+      <button id="btn-brush-stop" class="btn btn-danger btn-sm">终止</button>
     </div>
   </div>
 </div>

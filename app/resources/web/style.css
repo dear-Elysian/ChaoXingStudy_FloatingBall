@@ -194,6 +194,16 @@ body {
 #course-checked .row, #course-unchecked .row { border-bottom: 1px dashed #e5e7eb; }
 #course-checked .row:last-child, #course-unchecked .row:last-child { border-bottom: none; }
 
+/* ---------- 刷课（§7.3：默认不勾选） ---------- */
+/* 下拉占满剩余宽度（覆盖 .row select 的 margin-left:auto） */
+.row .brush-select {
+  flex: 1; margin-left: 12px; min-width: 0; height: 30px;
+  padding: 3px 8px; border-radius: 6px; border: 1px solid #d1d5db;
+  background: #fff; color: #111827;
+}
+.brush-hint { margin-top: 6px; font-size: 12px; }
+.brush-actions { display: flex; justify-content: center; margin-top: 10px; }
+
 /* ---------- Toast ---------- */
 .toast {
   position: fixed; left: 50%; bottom: 60px; transform: translateX(-50%);
@@ -289,6 +299,20 @@ body {
 }
 .confirm-text { white-space: pre-line; line-height: 1.7; margin-bottom: 14px; }
 .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
+/* 确认弹窗永远盖在刷课进度窗之上（终止需二次确认） */
+#confirm-overlay { z-index: 400; }
+
+/* ---------- 刷课进度窗口（v3.28）：两行居中 + 右下角红色终止 ---------- */
+.brush-progress-box { width: 82%; max-width: 320px; }
+.brush-progress-course {
+  font-weight: bold; font-size: 15px; text-align: center;
+  margin-bottom: 8px; word-break: break-all;
+}
+.brush-progress-chapter {
+  font-size: 13px; color: var(--muted); text-align: center;
+  margin-bottom: 14px; word-break: break-all;
+}
+.brush-progress-actions { display: flex; justify-content: flex-end; }
 
 /* ---------- AI帮做进度弹窗（§7.9）：替代长 Toast，显示预计耗时并可终止 ---------- */
 .ai-progress-title { font-weight: bold; margin-bottom: 10px; }

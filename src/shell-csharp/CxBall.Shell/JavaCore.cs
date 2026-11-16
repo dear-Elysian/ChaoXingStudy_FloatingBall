@@ -257,6 +257,10 @@ public sealed class JavaCore : IDisposable
 
     public Task<JsonObject> FetchCancel() => RequestAsync("fetch.cancel", null, DefaultTimeoutMs);
 
+    /// <summary>刷课规划（v3.28）：章节树 + 待完成章节任务点，由 C# 侧用本地浏览器执行。</summary>
+    public Task<JsonObject> BrushPlan(string courseId)
+        => RequestAsync("brush.plan", new JsonObject { ["courseId"] = courseId }, FetchTimeoutMs);
+
     public void Dispose()
     {
         _disposed = true;

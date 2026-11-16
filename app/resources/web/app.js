@@ -38,6 +38,8 @@ const S = {
   practiceTab: "unfinished",   // 随堂练习 Tab：unfinished | expired | ignored | all
   examTab: "unfinished",       // 考试 Tab：unfinished | all
   discussionTab: "unfinished", // 主题讨论 Tab：unfinished（未结束）| all
+  brushCourseId: "",           // 刷课下拉当前选中的课程（仅本机内存，不落盘）
+  brushRunning: false,         // 刷课进行中：禁用确定按钮、接收进度事件
   refreshing: false,
 };
 const $ = (id) => document.getElementById(id);
@@ -94,11 +96,28 @@ function cxConfirm(msg, danger = false, okText = "确定", cancelText = "取消"
     ok.className = "btn btn-sm " + (danger ? "btn-danger" : "btn-primary");
     ok.textContent = okText;
     $("btn-confirm-cancel").textContent = cancelText;
+    $("btn-confirm-cancel").classList.remove("hidden");
     overlay.classList.remove("hidden");
     const done = (v) => { overlay.classList.add("hidden"); resolve(v); };
     ok.onclick = () => done(true);
     $("btn-confirm-cancel").onclick = () => done(false);
     overlay.onclick = (e) => { if (e.target === overlay) done(false); };
+  });
+}
+
+// 仅告知（只有一个「确定」按钮），复用通用确认弹窗外壳
+function cxAlert(msg, okText = "确定") {
+  return new Promise((resolve) => {
+    const overlay = $("confirm-overlay");
+    $("confirm-text").textContent = msg;
+    $("btn-confirm-cancel").classList.add("hidden");
+    const ok = $("btn-confirm-ok");
+    ok.className = "btn btn-primary btn-sm";
+    ok.textContent = okText;
+    overlay.classList.remove("hidden");
+    const done = () => { overlay.classList.add("hidden"); resolve(true); };
+    ok.onclick = done;
+    overlay.onclick = (e) => { if (e.target === overlay) done(); };
   });
 }
 
@@ -125,6 +144,25 @@ $("btn-ai-progress-cancel").onclick = async () => {
   btn.disabled = true;
   btn.textContent = "终止中…";
   try { await bridge.call("ai.solve.cancel"); } catch { }
+};
+
+// ---------- 刷课进度窗口（v3.28） ----------
+function showBrushProgress(p = {}) {
+  $("brush-progress-overlay").classList.remove("hidden");
+  $("brush-progress-course").textContent = p.courseName || "";
+  $("brush-progress-chapter").textContent = p.chapterLabel || "正在准备…";
+  const btn = $("btn-brush-stop");
+  btn.disabled = false;
+  btn.textContent = "终止";
+}
+function hideBrushProgress() { $("brush-progress-overlay").classList.add("hidden"); }
+$("btn-brush-stop").onclick = async () => {
+  const btn = $("btn-brush-stop");
+  if (btn.disabled) return;
+  if (!(await cxConfirm("是否终止本次刷课？", true, "终止", "取消"))) return;
+  btn.disabled = true;
+  btn.textContent = "终止中…";
+  try { await bridge.call("brush.stop"); } catch { }
 };
 
 // ---------- 作业分类（§v1.4） ----------
@@ -263,12 +301,14 @@ function renderPanel() {
   $("mod-notice").classList.toggle("hidden", mods.notice === false);
   $("mod-exam").classList.toggle("hidden", mods.exam === false);
   $("mod-discussion").classList.toggle("hidden", mods.discussion === false);
+  $("mod-brush").classList.toggle("hidden", mods.brush !== true);   // 刷课默认不勾选：缺失/未开启都不显示
 
   renderAssignments();
   renderPractices();
   renderNotices();
   renderExams();
   renderDiscussions();
+  renderBrush();
 
   const cls = classify();
   bridge.call("badge", { unfinished: cls.unfinished.length });
@@ -534,6 +574,42 @@ function renderNotices() {
     };
     list.appendChild(el);
   }
+}
+
+// ---------- 刷课（下拉只列设置里已勾选的课程；刷新由 C# 按模块开关决定，确定后执行刷课） ----------
+function checkedCourses() {
+  const deselected = new Set(S.account?.state?.deselectedCourses || []);
+  return (S.snapshot?.courses || []).filter((c) => c.courseId && !deselected.has(c.courseId));
+}
+
+function renderBrush() {
+  const sel = $("brush-course");
+  const courses = checkedCourses();
+  // 记住当前选择；课程被取消勾选或换账号后回落到第一门
+  if (!courses.some((c) => c.courseId === S.brushCourseId)) S.brushCourseId = courses[0]?.courseId || "";
+  sel.innerHTML = "";
+  for (const c of courses) {
+    const opt = document.createElement("option");
+    opt.value = c.courseId;
+    opt.textContent = c.courseName || c.courseId;
+    sel.appendChild(opt);
+  }
+  if (!courses.length) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "暂无可选课程";
+    sel.appendChild(opt);
+  }
+  sel.disabled = !courses.length;
+  sel.value = S.brushCourseId;
+  $("btn-brush-confirm").disabled = !courses.length || S.brushRunning;
+
+  const it = (S.snapshot?.items || []).find((i) => i.type === "brush" && i.courseId === S.brushCourseId);
+  const hint = $("brush-hint");
+  if (!courses.length) hint.textContent = "请先在设置 → 课程选择里勾选课程";
+  else if (!it) hint.textContent = "刷新时会读取该课程的章节";
+  else if (it.status === "暂无章节") hint.textContent = "已读取章节页，暂无章节内容";
+  else hint.textContent = `章节：${it.chapterCount ?? 0} 个 · 任务点 ${it.finishedPoints ?? 0}/${it.totalPoints ?? 0}`;
 }
 
 function escapeHtml(s) {
@@ -815,6 +891,7 @@ async function renderSettings() {
   $("set-mod-notice").checked = s.modules?.notice !== false;
   $("set-mod-exam").checked = s.modules?.exam !== false;
   $("set-mod-discussion").checked = s.modules?.discussion !== false;
+  $("set-mod-brush").checked = s.modules?.brush === true;   // 默认不勾选：旧配置缺失也保持关闭
   $("set-throttle").value = String(s.manualThrottleSec ?? 15);
   // §7.2 登录自动刷新
   $("set-login-auto").checked = s.loginAutoRefresh !== false;
@@ -1007,6 +1084,7 @@ $("exam-title").onclick = () => toggleCollapse("exam-arrow", "exam-body");
 $("discussion-title").onclick = () => toggleCollapse("discussion-arrow", "discussion-body");
 $("practice-title").onclick = () => toggleCollapse("practice-arrow", "practice-body");
 $("notice-title").onclick = () => toggleCollapse("notice-arrow", "notice-list");
+$("brush-title").onclick = () => toggleCollapse("brush-arrow", "brush-body");
 
 // 悬浮球右键菜单动作（§8.3：刷新 / 设置 / 退出登录）
 bridge.on("menu.action", (p) => {
@@ -1028,6 +1106,52 @@ $("set-mod-practice").onchange = (e) => saveSettings({ modules: { practice: e.ta
 $("set-mod-notice").onchange = (e) => saveSettings({ modules: { notice: e.target.checked } });
 $("set-mod-exam").onchange = (e) => saveSettings({ modules: { exam: e.target.checked } });
 $("set-mod-discussion").onchange = (e) => saveSettings({ modules: { discussion: e.target.checked } });
+$("set-mod-brush").onchange = (e) => saveSettings({ modules: { brush: e.target.checked } });
+// 刷课卡片：先二次确认，再由 C# 规划章节并用本地浏览器逐章执行（v3.28）
+$("brush-course").onchange = (e) => { S.brushCourseId = e.target.value; renderBrush(); };
+$("btn-brush-confirm").onclick = async () => {
+  if (S.brushRunning) return toast("刷课正在进行中");
+  const c = checkedCourses().find((x) => x.courseId === S.brushCourseId);
+  if (!c) return toast("请先在设置里勾选课程");
+  const name = c.courseName || c.courseId;
+  if (!(await cxConfirm(`你是否要刷“${name}”的课程。`))) return;
+
+  S.brushRunning = true;
+  $("btn-brush-confirm").disabled = true;
+  showBrushProgress({ courseName: name, chapterLabel: "正在检查课程章节…" });
+  try {
+    const r = await bridge.call("brush.start", { courseId: c.courseId });
+    hideBrushProgress();
+    const n = r.courseName || name;
+    if (r.kind === "empty") await cxAlert(`该课程“${n}”暂未发现要刷的内容。`);
+    else if (r.kind === "finished") await cxAlert(`该课程“${n}”已刷完。`);
+    else if (r.kind === "stopped") toast("已终止刷课");
+    else toast("刷课完成", 5000);
+  } catch (e) {
+    hideBrushProgress();
+    if (e.code === "SESSION_EXPIRED") {
+      if (await cxConfirm((e.message || "学习通登录态已失效") + "\n是否现在登录？")) $("btn-login").click();
+    } else if (e.code === "BROWSER_NOT_SET" || e.code === "AI_UNSUPPORTED_BROWSER") {
+      if (await cxConfirm("还没有可用的浏览器地址。\n请到设置页的「详情浏览器」填写浏览器路径，或点击「自动」探测本机浏览器。\n是否现在前往设置？")) {
+        renderSettings();
+        switchView("view-panel", "view-settings");
+      }
+    } else if (e.code === "BRUSH_BUSY") {
+      toast(e.message || "刷课正在进行中");
+    } else {
+      await cxAlert(e.message || "刷课失败");
+    }
+  } finally {
+    S.brushRunning = false;
+    hideBrushProgress();
+    renderBrush();
+  }
+};
+// 刷课进度：第一行课程名、第二行当前章节（仅在本次刷课进行中更新）
+bridge.on("brush.progress", (p) => {
+  if (!S.brushRunning || !p) return;
+  showBrushProgress(p);
+});
 // §7.2 登录自动刷新
 $("set-login-auto").onchange = (e) => {
   $("set-login-interval").disabled = !e.target.checked;

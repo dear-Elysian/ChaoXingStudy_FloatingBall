@@ -18,6 +18,7 @@ sealed class Bridge
     readonly SemaphoreSlim _refreshLock = new(1, 1);   // 防重入（§4.4）
     CancellationTokenSource? _aiSolveCts;               // AI帮做取消令牌（§7.9）
     TaskCompletionSource<bool>? _aiConfirmTcs;          // 题量/思考链确认结果（§7.9）
+    CancellationTokenSource? _brushCts;                 // 刷课取消令牌（v3.28）
 
     /// <summary>首次登录默认勾选的课程数（§7.4）：只请求前 N 门详情，其余仅展示课程名。</summary>
     const int DefaultSelectedCourses = 10;
@@ -64,6 +65,8 @@ sealed class Bridge
                 "ai.solve" => await AiSolve(payload),
                 "ai.solve.decide" => AiSolveConfirm(payload),
                 "ai.solve.cancel" => AiSolveCancel(),
+                "brush.start" => await BrushStart(payload),
+                "brush.stop" => BrushStop(),
                 "browser.pick" => await BrowserPick(),
                 "browser.detect" => BrowserDetect(),
                 "courses.setDeselected" => CoursesSetDeselected(payload),
@@ -175,6 +178,7 @@ sealed class Bridge
                             ["exam"] = false,
                             ["practice"] = false,
                             ["discussion"] = false,
+                            ["brush"] = false,
                         },
                     });
                 }
@@ -306,11 +310,13 @@ sealed class Bridge
             var noticeOn = ModuleOn("notice");
             var examOn = ModuleOn("exam");
             var discussionOn = ModuleOn("discussion");
+            var brushOn = ModuleOn("brush");
             var modules = new JsonArray("assignment");
             if (practiceOn) modules.Add("practice");
             if (noticeOn) modules.Add("notice");
             if (examOn) modules.Add("exam");
             if (discussionOn) modules.Add("discussion");
+            if (brushOn) modules.Add("brush");
             var result = await _core.FetchStart(modules, selected);
             // 优先使用 Java 返回的课程列表：已选课程带 stuenc/enc，随快照落盘（附录 B.4）；
             // 课程阶段失败时回落到阶段一列表，保证设置页仍能看到课程名。
@@ -326,7 +332,8 @@ sealed class Bridge
                 {
                     var type = node?["type"]?.GetValue<string>();
                     if ((type == "practice" && !practiceOn) || (type == "notice" && !noticeOn)
-                        || (type == "exam" && !examOn) || (type == "discussion" && !discussionOn))
+                        || (type == "exam" && !examOn) || (type == "discussion" && !discussionOn)
+                        || (type == "brush" && !brushOn))
                         items.Add(node?.DeepClone());
                 }
             }
@@ -457,6 +464,8 @@ sealed class Bridge
     {
         if (_aiSolveCts != null)
             throw new CoreException("AI_BUSY", "AI 正在作答，请稍候", false);
+        if (_brushCts != null)
+            throw new CoreException("AI_BUSY", "刷课正在进行，请稍候", false);
 
         var cts = new CancellationTokenSource();
         _aiSolveCts = cts;
@@ -524,6 +533,85 @@ sealed class Bridge
     {
         _aiConfirmTcs?.TrySetResult(false);
         try { _aiSolveCts?.Cancel(); } catch (ObjectDisposedException) { }
+        return new JsonObject();
+    }
+
+    // ---------- 刷课（v3.28） ----------
+
+    /// <summary>
+    /// 刷课主流程：先让 Java 规划章节与任务点（empty / finished / start），
+    /// start 时用外部 Chromium 浏览器逐章执行，进度通过 brush.progress 事件推送。
+    /// 返回 kind=empty|finished|done|stopped，由前端弹出对应文案。
+    /// </summary>
+    async Task<JsonObject> BrushStart(JsonObject payload)
+    {
+        if (_brushCts != null)
+            throw new CoreException("BRUSH_BUSY", "刷课正在进行，请稍候", false);
+        if (_aiSolveCts != null)
+            throw new CoreException("BRUSH_BUSY", "AI 正在作答，请稍候", false);
+
+        // 刷课复用设置里的「详情浏览器」：路径未配置/无效时立刻抛出 BROWSER_NOT_SET，
+        // 由前端弹窗引导前往设置填写，而不是等检查完章节才报错
+        AiWorkSolver.RequireChromiumBrowser();
+
+        var courseId = payload["courseId"]?.GetValue<string>() ?? "";
+        if (courseId.Length == 0)
+            throw new CoreException("INTERNAL", "缺少课程 ID", false);
+
+        var cts = new CancellationTokenSource();
+        _brushCts = cts;
+        var courseName = "";
+        try
+        {
+            var planResp = await _core.BrushPlan(courseId);
+            var plan = planResp["plan"] as JsonObject ?? planResp;   // Java 回包形如 {plan:{...}}
+            courseName = plan["courseName"]?.GetValue<string>() ?? "";
+            var mode = plan["mode"]?.GetValue<string>() ?? "empty";
+            if (mode != "start")
+                return new JsonObject { ["kind"] = mode == "finished" ? "finished" : "empty", ["courseName"] = courseName };
+
+            var acct = CurrentAccount();
+            var cookiesJson = AccountStore.TryLoadSession(acct)
+                ?? throw new CoreException("SESSION_EXPIRED", "登录会话不存在，请重新登录", false);
+            JsonArray cookies;
+            try { cookies = JsonNode.Parse(cookiesJson) as JsonArray ?? new JsonArray(); }
+            catch { throw new CoreException("SESSION_EXPIRED", "登录会话已损坏，请重新登录", false); }
+
+            var progress = new Action<BrushProgress>(p => SendEvent("brush.progress", new JsonObject
+            {
+                ["courseName"] = p.CourseName,
+                ["chapterLabel"] = p.ChapterLabel,
+                ["index"] = p.Index,
+                ["total"] = p.Total,
+            }));
+            return await BrushService.RunAsync(plan, cookies, progress, cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            return new JsonObject { ["kind"] = "stopped", ["courseName"] = courseName };
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                Directory.CreateDirectory(Paths.LogsDir);
+                File.AppendAllText(Path.Combine(Paths.LogsDir, "brush-debug.log"),
+                    "[" + DateTime.Now.ToString("HH:mm:ss.fff") + "] brush error: " + ex.Message + Environment.NewLine);
+            }
+            catch { }
+            throw;
+        }
+        finally
+        {
+            if (ReferenceEquals(_brushCts, cts)) _brushCts = null;
+            cts.Dispose();
+        }
+    }
+
+    /// <summary>前端点「终止」：取消当前刷课；正在执行的 CDP 步骤会在下一次轮询时退出。</summary>
+    JsonObject BrushStop()
+    {
+        try { _brushCts?.Cancel(); } catch (ObjectDisposedException) { }
         return new JsonObject();
     }
 
