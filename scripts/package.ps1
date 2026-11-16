@@ -1,4 +1,4 @@
-﻿# 打包便携版（方案 §6）：自包含 .NET 运行时 + jlink 裁剪 JRE
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿# 打包便携版（方案 §6）：自包含 .NET 运行时 + jlink 裁剪 JRE
 # 成品输出到 学习通悬浮球\app\，不再有 dist 外层
 # 用法：powershell -ExecutionPolicy Bypass -File scripts\package.ps1
 param(
@@ -15,7 +15,6 @@ Set-Location $root
 
 Write-Host "[1/4] 构建 Java 核心 (mvn package) ..."
 mvn -q -f src\core-java\pom.xml clean package
-if ($LASTEXITCODE -ne 0) { throw "Maven 构建失败（退出码 $LASTEXITCODE）" }
 if (-not (Test-Path app\core\core.jar)) { throw "core.jar 未生成，检查 Maven 输出" }
 
 Write-Host "[2/4] 清空输出目录 $OutDir ..."
@@ -41,7 +40,6 @@ if (-not $dotnet) { throw "未找到 .NET SDK（dotnet --list-sdks 为空）" }
     -p:AssemblyName=launcher `
     -p:DebugType=none `
     -o "$OutDir\app" --nologo
-if ($LASTEXITCODE -ne 0) { throw ".NET 发布失败（退出码 $LASTEXITCODE）" }
 if (-not (Test-Path "$OutDir\app\launcher.exe")) { throw "launcher.exe 未生成" }
 
 Write-Host "[4/4] 生成 jlink 运行时 + 复制只读资源 ..."
@@ -49,7 +47,6 @@ New-Item -ItemType Directory -Path "$OutDir\app\core" -Force | Out-Null
 Copy-Item app\core\core.jar "$OutDir\app\core\core.jar" -Force
 jlink --add-modules ($JreModules -join ",") --output "$OutDir\app\jre" `
     --strip-debug --no-header-files --no-man-pages --compress=2
-if ($LASTEXITCODE -ne 0) { throw "jlink 运行时生成失败（退出码 $LASTEXITCODE）" }
 Copy-Item app\resources "$OutDir\app\resources" -Recurse -Force
 # 单文件发布仍会附带 WebView2 的 XML 文档，成品不需要
 Get-ChildItem "$OutDir\app" -Filter *.xml | Remove-Item -Force

@@ -128,6 +128,25 @@ $("btn-ai-progress-cancel").onclick = async () => {
 };
 
 // ---------- 作业分类（§v1.4） ----------
+// 截止后的作业在列表页不再显示「剩余…」倒计时（div.time 整块消失），
+// 此时从前一次抓到的作业通知里补全精确结束时间（标题形如
+// 「课程名称：X；作业名称：Y；开始时间：…；结束时间：YYYY-MM-DD HH:mm」）。
+// deadline=0 是「已过期但无精确时间」的哨兵值，直接沿用，不去补全。
+function assignmentDeadline(it) {
+  if (it.deadline != null) return it.deadline;
+  const items = S.snapshot?.items || [];
+  for (const n of items) {
+    if (n.type !== "notice" || String(n.courseId) !== String(it.courseId)) continue;
+    const t = n.title || "";
+    const name = /作业名称：([^；]*)；/.exec(t);
+    if (!name || name[1].trim() !== (it.title || "").trim()) continue;
+    const end = /结束时间：(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/.exec(t);
+    if (!end) continue;
+    return new Date(+end[1], +end[2] - 1, +end[3], +end[4], +end[5]).getTime();
+  }
+  return null;
+}
+
 function classify() {
   const now = Date.now();
   const ignored = ignoredSet();
@@ -139,12 +158,13 @@ function classify() {
     if (ignored.has(itemKey(it))) { r.ignored.push(it); continue; }
     r.all.push(it);
     if (isUnfinished(it)) {
-      // deadline=0 表示已过期但无精确时间（附录 A.2），不能用真假值判断
-      (it.deadline != null && it.deadline <= now ? r.expired : r.unfinished).push(it);
+      // 剩余不足 1 分钟即归入已过期；deadline=0 表示已过期但无精确时间（附录 A.2）
+      const dl = assignmentDeadline(it);
+      (dl != null && dl - now < 60000 ? r.expired : r.unfinished).push(it);
     }
   }
   // deadline=0 是「无精确时间」的哨兵值，排序时按无截止时间处理（排最后）
-  const byDeadline = (a, b) => (a.deadline || Infinity) - (b.deadline || Infinity);
+  const byDeadline = (a, b) => (assignmentDeadline(a) || Infinity) - (assignmentDeadline(b) || Infinity);
   r.unfinished.sort(byDeadline);
   r.expired.sort(byDeadline);
   // 已忽略：操作时间近→远（§8.2.1；旧数据无时间戳则排在后）
@@ -186,15 +206,19 @@ function classifyPractices() {
 
 // ---------- 时间文本（§7.5：两个独立开关，都不勾 = 不显示时间） ----------
 function timeText(it) {
-  if (!it.deadline) return "";
+  const deadline = assignmentDeadline(it);
+  if (!deadline) return "";
   const mode = S.settings?.timeDisplay ?? "remainingHours";
   if (mode === "none") return "";
-  const d = new Date(it.deadline);
+  const d = new Date(deadline);
   const p = (n) => String(n).padStart(2, "0");
   const deadlineStr = `截止 ${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
   if (mode === "deadline") return deadlineStr;
-  const h = Math.floor((it.deadline - Date.now()) / 3600000);   // 向下取整（§v1.4）
-  const remainStr = h >= 0 ? `剩 ${h} 小时` : "已截止";
+  const ms = deadline - Date.now();
+  if (ms <= 0) return mode === "both" ? `已截止 · ${deadlineStr}` : "已截止";
+  // 不足 1 小时按分钟显示（§v1.4）
+  const mins = Math.floor(ms / 60000);
+  const remainStr = mins < 60 ? `剩 ${Math.max(1, mins)} 分钟` : `剩 ${Math.floor(mins / 60)} 小时`;
   return mode === "both" ? `${remainStr} · ${deadlineStr}` : remainStr;
 }
 
@@ -299,7 +323,7 @@ function renderAssignments() {
   for (const it of items) {
     const el = document.createElement("div");
     el.className = "item";
-    const t = isUnfinished(it) && it.deadline ? timeText(it) : "";
+    const t = isUnfinished(it) ? timeText(it) : "";
     const deadlineHtml = t ? `<span class="item-deadline">${t}</span>` : "";
     const statusCls = isUnfinished(it) ? "" : " item-status-done";
     el.innerHTML = `
@@ -1448,6 +1472,14 @@ async function reloadInit() {
   }
   return r;
 }
+
+// 截止状态会随时间变化：主面板可见时每 60 秒本地重算作业/练习分类，不触发网络请求
+setInterval(() => {
+  if ($("view-panel").classList.contains("hidden") || !S.snapshot || S.refreshing) return;
+  renderAssignments();
+  renderPractices();
+  bridge.call("badge", { unfinished: classify().unfinished.length });
+}, 60000);
 
 (async () => {
   const r = await reloadInit();
