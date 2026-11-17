@@ -34,7 +34,9 @@ public class BrushPlanner {
     private static final Set<String> BRUSHABLE = Set.of("doc", "video", "audio");
 
     /** 规划结果：mode=empty（无内容）/ finished（已刷完）/ start（有可刷章节） */
-    public JSONObject plan(ChaoxingClient client, CourseCollector courses, String courseId) throws ApiException {
+    public JSONObject plan(ChaoxingClient client, CourseCollector courses, String courseId,
+                           int parallel, java.util.function.BooleanSupplier cancelled) throws ApiException {
+        if (cancelled.getAsBoolean()) throw cancelledException();
         JSONObject course = findCourse(courses.fetchCourses(client), courseId);
         if (course == null) {
             throw new ApiException(Protocol.PARSE_ERROR, "课程列表中未找到该课程，请先刷新课程列表", false);
@@ -59,6 +61,7 @@ public class BrushPlanner {
         String referer = "https://mooc2-ans.chaoxing.com/mooc2-ans/mycourse/stu"
                 + "?courseid=" + courseId + "&clazzid=" + classId;
 
+        if (cancelled.getAsBoolean()) throw cancelledException();
         String html = client.get(chapterUrl, referer);
         Document doc = Jsoup.parse(html);
         String text = doc.text();
@@ -80,22 +83,85 @@ public class BrushPlanner {
 
         List<JSONObject> nodes = parseChapterNodes(doc);
 
-        JSONArray chapters = new JSONArray();
+        List<JSONObject> pending = new ArrayList<>();
         for (JSONObject node : nodes) {
-            if (node.optBoolean("leaf") && !node.optBoolean("completed") && node.optInt("pending", 0) > 0) {
-                String chapterId = node.getString("chapterId");
-                TaskInfo info = fetchTasks(client, courseId, classId, cpi, chapterId, referer);
-                if (info == null || info.brushable) {
-                    // cards 读取失败时仍交给浏览器尝试；解析成功且有可刷任务才保留
-                    JSONObject ch = new JSONObject();
-                    ch.put("chapterId", chapterId);
-                    ch.put("label", node.optString("label"));
-                    ch.put("name", node.optString("name"));
-                    ch.put("level", node.optInt("level", 1));
-                    ch.put("pending", node.optInt("pending", 1));
-                    ch.put("tasks", info == null ? new JSONArray() : info.tasks);
-                    chapters.put(ch);
+            if (node.optBoolean("leaf") && !node.optBoolean("completed") && node.optInt("pending", 0) > 0)
+                pending.add(node);
+        }
+
+        // 章节任务点检索按「并行加载」设置并发；每个工作线程用独立客户端避免共享节流退化。
+        TaskInfo[] infos = new TaskInfo[pending.size()];
+        int workers = Math.min(Math.max(1, parallel), pending.size());
+        if (workers <= 1) {
+            for (int i = 0; i < pending.size(); i++) {
+                if (cancelled.getAsBoolean()) throw cancelledException();
+                infos[i] = fetchTasks(client, courseId, classId, cpi,
+                        pending.get(i).getString("chapterId"), referer, cancelled);
+            }
+        } else {
+            java.util.concurrent.ExecutorService pool =
+                    java.util.concurrent.Executors.newFixedThreadPool(workers);
+            ThreadLocal<ChaoxingClient> workerClient = ThreadLocal.withInitial(client::copyForWorker);
+            java.util.concurrent.atomic.AtomicReference<ApiException> fatal =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.List<java.util.concurrent.Future<?>> futures = new java.util.ArrayList<>();
+            try {
+                for (int i = 0; i < pending.size(); i++) {
+                    final int idx = i;
+                    futures.add(pool.submit(() -> {
+                        if (fatal.get() != null || cancelled.getAsBoolean()) return;
+                        try {
+                            infos[idx] = fetchTasks(workerClient.get(), courseId, classId, cpi,
+                                    pending.get(idx).getString("chapterId"), referer, cancelled);
+                        } catch (ApiException e) {
+                            fatal.compareAndSet(null, e);
+                        } catch (RuntimeException e) {
+                            fatal.compareAndSet(null, new ApiException(Protocol.PARSE_ERROR,
+                                    "章节任务点检索失败: " + e.getMessage(), false));
+                        }
+                    }));
                 }
+                pool.shutdown();
+                while (!pool.awaitTermination(200, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                    // 任务内部会在每个请求前检查取消标志，这里只等待批次结束
+                }
+                if (cancelled.getAsBoolean()) throw cancelledException();
+                for (java.util.concurrent.Future<?> f : futures) {
+                    try {
+                        f.get();
+                    } catch (java.util.concurrent.ExecutionException ee) {
+                        Throwable cause = ee.getCause();
+                        if (cause instanceof ApiException ae) throw ae;
+                        throw new ApiException(Protocol.PARSE_ERROR,
+                                "章节任务点并行检索失败: "
+                                        + (cause == null ? "未知错误" : cause.getMessage()), false);
+                    }
+                }
+            } catch (InterruptedException ie) {
+                pool.shutdownNow();
+                Thread.currentThread().interrupt();
+                throw new ApiException(Protocol.NETWORK_ERROR, "章节任务点检索被中断", true);
+            } finally {
+                pool.shutdownNow();
+            }
+            ApiException f = fatal.get();
+            if (f != null) throw f;
+        }
+
+        JSONArray chapters = new JSONArray();
+        for (int i = 0; i < pending.size(); i++) {
+            JSONObject node = pending.get(i);
+            TaskInfo info = infos[i];
+            if (info == null || info.brushable) {
+                // cards 读取失败时仍交给浏览器尝试；解析成功且有可刷任务才保留
+                JSONObject ch = new JSONObject();
+                ch.put("chapterId", node.getString("chapterId"));
+                ch.put("label", node.optString("label"));
+                ch.put("name", node.optString("name"));
+                ch.put("level", node.optInt("level", 1));
+                ch.put("pending", node.optInt("pending", 1));
+                ch.put("tasks", info == null ? new JSONArray() : info.tasks);
+                chapters.put(ch);
             }
         }
 
@@ -224,7 +290,8 @@ public class BrushPlanner {
 
     /** 读取单章节 cards 页；返回 null 表示无法判断（交给浏览器兜底）。 */
     private TaskInfo fetchTasks(ChaoxingClient client, String courseId, String classId,
-                                String cpi, String chapterId, String referer) throws ApiException {
+                                String cpi, String chapterId, String referer,
+                                java.util.function.BooleanSupplier cancelled) throws ApiException {
         JSONArray tasks = new JSONArray();
         java.util.Set<String> seen = new java.util.HashSet<>();
         boolean brushable = false;
@@ -233,6 +300,7 @@ public class BrushPlanner {
         // 章节可能按任务类型分成多个 cards 页（num=0 视频、num=1 文档……），
         // 逐页收集，直到某一页没有新任务或没有 attachments（最多 6 页，覆盖后续新增类型）
         for (int num = 0; num < 6; num++) {
+            if (cancelled.getAsBoolean()) throw cancelledException();
             String url = "https://mooc1.chaoxing.com/mooc-ans/knowledge/cards"
                     + "?clazzid=" + classId
                     + "&courseid=" + courseId
@@ -304,6 +372,10 @@ public class BrushPlanner {
             if (!added && num > 0) break;
         }
         return anyParsed ? new TaskInfo(tasks, brushable) : null;
+    }
+
+    private static ApiException cancelledException() {
+        return new ApiException(Protocol.CANCELLED, "章节检查已取消", false);
     }
 
     private static String kindOf(String module) {

@@ -31,15 +31,21 @@ static class AiWorkSolver
         var exe = RequireChromiumBrowser();
 
         progress?.Invoke(new AiProgress("正在启动作答浏览器…"));
-        var port = await EnsureBrowserAsync(exe);
-        var wsUrl = await EnsurePageTargetAsync(port, url.AbsoluteUri);
+        var port = await EnsureBrowserAsync(exe, ct);
+        ct.ThrowIfCancellationRequested();
+        var wsUrl = await EnsurePageTargetAsync(port, url.AbsoluteUri, ct);
+        ct.ThrowIfCancellationRequested();
 
         await using var cdp = await CdpClient.ConnectAsync(wsUrl, TimeSpan.FromSeconds(10));
-        var cookieErrors = await PrepareSessionAsync(cdp, cookies);
+        ct.ThrowIfCancellationRequested();
+        var cookieErrors = await PrepareSessionAsync(cdp, cookies, ct);
+        ct.ThrowIfCancellationRequested();
 
         progress?.Invoke(new AiProgress("正在打开作业页面…"));
         await cdp.CallAsync("Page.enable", null, 15000);
+        ct.ThrowIfCancellationRequested();
         await cdp.CallAsync("Page.navigate", new JsonObject { ["url"] = url.AbsoluteUri }, 20000);
+        ct.ThrowIfCancellationRequested();
         // 后台标签页会节流 UEditor 初始化，把作答页切到前台再等题目
         try { await cdp.CallAsync("Page.bringToFront", null, 5000); } catch (CoreException) { }
 
@@ -187,14 +193,16 @@ static class AiWorkSolver
     }
 
     /// <summary>向作答浏览器注入应用保存的学习通 Cookie（先清空 Profile 内旧 Cookie）。返回失败条数。</summary>
-    internal static async Task<int> PrepareSessionAsync(CdpClient cdp, JsonArray cookies)
+    internal static async Task<int> PrepareSessionAsync(CdpClient cdp, JsonArray cookies, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         await cdp.CallAsync("Network.enable", null, 15000);
         try { await cdp.CallAsync("Network.clearBrowserCookies", null, 15000); } catch (CoreException) { }
 
         var errors = 0;
         foreach (var c in cookies)
         {
+            ct.ThrowIfCancellationRequested();
             if (c is not JsonObject ck) continue;
             var name = ck["name"]?.GetValue<string>() ?? "";
             var value = ck["value"]?.GetValue<string>() ?? "";
@@ -220,11 +228,13 @@ static class AiWorkSolver
         => Path.Combine(Paths.DataDir, "browser-ai-" + Path.GetFileNameWithoutExtension(exe).ToLowerInvariant());
 
     /// <summary>复用已运行的作答浏览器；否则用独立 Profile 启动并打开调试端口。返回端口号。</summary>
-    internal static async Task<int> EnsureBrowserAsync(string exe)
+    internal static async Task<int> EnsureBrowserAsync(string exe, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         var marker = LoadMarker(exe);
         if (marker != null && await IsPortAlive(marker.Value.Port))
             return marker.Value.Port;
+        ct.ThrowIfCancellationRequested();
 
         var port = PickPort();
         var profile = ProfileDirFor(exe);
@@ -241,20 +251,31 @@ static class AiWorkSolver
         psi.ArgumentList.Add("--autoplay-policy=no-user-gesture-required");
         psi.ArgumentList.Add("about:blank");
 
-        try { Process.Start(psi); }
+        Process? started;
+        try { started = Process.Start(psi); }
         catch (Exception ex)
         {
             throw new CoreException("AI_BROWSER_FAILED", "无法启动浏览器：" + ex.Message, false);
         }
 
-        for (var i = 0; i < 80; i++)
+        try
         {
-            if (await IsPortAlive(port))
+            for (var i = 0; i < 80; i++)
             {
-                SaveMarker(exe, port);
-                return port;
+                ct.ThrowIfCancellationRequested();
+                if (await IsPortAlive(port))
+                {
+                    SaveMarker(exe, port);
+                    return port;
+                }
+                await Task.Delay(250, ct);
             }
-            await Task.Delay(250);
+        }
+        catch (OperationCanceledException)
+        {
+            // 启动途中被终止：本次刚拉起的浏览器一并关掉，避免点了终止后还弹窗
+            try { started?.Kill(entireProcessTree: true); } catch { }
+            throw;
         }
         throw new CoreException("AI_BROWSER_FAILED",
             "浏览器未开启调试端口。AI帮做仅支持 Edge/Chrome 内核浏览器，请在「详情浏览器」中改用 Edge 或 Chrome", false);
@@ -303,9 +324,11 @@ static class AiWorkSolver
     }
 
     /// <summary>找到一个可导航的 page target；优先复用已打开同一页面的标签页。</summary>
-    internal static async Task<string> EnsurePageTargetAsync(int port, string pageUrl)
+    internal static async Task<string> EnsurePageTargetAsync(int port, string pageUrl, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         var list = await ReadTargetsAsync(port);
+        ct.ThrowIfCancellationRequested();
         var same = list.FirstOrDefault(t => (t["url"]?.GetValue<string>() ?? "").StartsWith(pageUrl, StringComparison.OrdinalIgnoreCase));
         if (same?["webSocketDebuggerUrl"]?.GetValue<string>() is string sameUrl && sameUrl.Length > 0) return sameUrl;
 

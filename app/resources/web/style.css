@@ -299,8 +299,12 @@ body {
 }
 .confirm-text { white-space: pre-line; line-height: 1.7; margin-bottom: 14px; }
 .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
+/* 429 限流提示：第一行加粗居中，第二行为建议文案 */
+.rate-limit-code { font-size: 22px; font-weight: 700; text-align: center; margin-bottom: 8px; }
+.rate-limit-text { text-align: center; line-height: 1.7; color: #666; margin-bottom: 14px; }
 /* 确认弹窗永远盖在刷课进度窗之上（终止需二次确认） */
 #confirm-overlay { z-index: 400; }
+#rate-limit-overlay { z-index: 420; }
 
 /* ---------- 刷课进度窗口（v3.28）：两行居中 + 右下角红色终止 ---------- */
 .brush-progress-box { width: 82%; max-width: 320px; }

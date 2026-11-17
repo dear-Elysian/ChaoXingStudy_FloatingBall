@@ -39,6 +39,8 @@ public class Main {
     private final PrintWriter out;
     private final java.util.concurrent.atomic.AtomicBoolean fetchRunning = new java.util.concurrent.atomic.AtomicBoolean(false);
     private volatile boolean cancelFetch = false;
+    private final java.util.concurrent.atomic.AtomicBoolean brushPlanRunning = new java.util.concurrent.atomic.AtomicBoolean(false);
+    private volatile boolean cancelBrushPlan = false;
 
     public static void main(String[] args) throws Exception {
         new Main(new PrintWriter(new java.io.OutputStreamWriter(System.out, StandardCharsets.UTF_8), true)).run();
@@ -120,11 +122,13 @@ public class Main {
                 respond(Protocol.ok(id, type, new JSONObject()));
             }
 
-            // 刷课规划（v3.28）：章节树 + 待完成章节任务点，由 C# 侧用本地浏览器执行
-            case "brush.plan" -> {
-                JSONObject p = new JSONObject();
-                p.put("plan", brushPlanner.plan(client, courses, payload.getString("courseId")));
-                respond(Protocol.ok(id, type, p));
+            // 刷课规划（v3.28）：放到工作线程，主循环继续读 stdin，
+            // 这样 brush.cancel 能在检查途中立即生效，不会“停不干净”。
+            case "brush.plan" -> startBrushPlan(id, payload);
+
+            case "brush.cancel" -> {
+                cancelBrushPlan = true;
+                respond(Protocol.ok(id, type, new JSONObject()));
             }
 
             case "sys.shutdown" -> respond(Protocol.ok(id, type, new JSONObject()));
@@ -151,6 +155,36 @@ public class Main {
                 fetchRunning.set(false);
             }
         }, "fetch-worker");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    /** 刷课章节规划：独立线程执行，主循环可继续处理 brush.cancel。 */
+    private void startBrushPlan(String id, JSONObject payload) {
+        if (!brushPlanRunning.compareAndSet(false, true)) {
+            respond(Protocol.err(id, "brush.plan", Protocol.RATE_LIMITED, "正在检查章节，请稍候", true));
+            return;
+        }
+        cancelBrushPlan = false;
+        String courseId = payload.optString("courseId", "");
+        int parallel = Math.max(1, Math.min(8, payload.optInt("parallel", 1)));
+        Thread worker = new Thread(() -> {
+            try {
+                JSONObject p = new JSONObject();
+                p.put("plan", brushPlanner.plan(client, courses, courseId, parallel,
+                        () -> cancelBrushPlan));
+                if (cancelBrushPlan) throw new ApiException(Protocol.CANCELLED, "章节检查已取消", false);
+                respond(Protocol.ok(id, "brush.plan", p));
+            } catch (ApiException e) {
+                respond(Protocol.err(id, "brush.plan", e.code, e.getMessage(), e.retryable));
+            } catch (Exception e) {
+                respond(Protocol.err(id, "brush.plan", Protocol.INTERNAL,
+                        "内部错误: " + e.getClass().getSimpleName() + " " + e.getMessage(), true));
+            } finally {
+                brushPlanRunning.set(false);
+                cancelBrushPlan = false;
+            }
+        }, "brush-plan-worker");
         worker.setDaemon(true);
         worker.start();
     }
@@ -205,35 +239,123 @@ public class Main {
         }
 
         int overallTotal = targets.size() + globalCols.size();   // 每门课 1 步 + 每个全局采集器 1 步
-        int overallDone = 0;
-        // 同一门课程可能被多个 perCourse 采集器使用：secrets 只补全一次，避免重复请求中间页/课程页。
-        java.util.Set<String> enriched = new java.util.HashSet<>();
-        for (int i = 0; i < targets.size(); i++) {
-            checkCancel();
-            JSONObject c = targets.get(i);
-            String cid = c.getString("courseId");
-            String name = c.optString("courseName", cid);
-            progress(id, "course", cid, i, targets.size(), name, overallDone, overallTotal);
-            for (Collector col : courseCols) {
+        java.util.concurrent.atomic.AtomicInteger overallDone =
+                new java.util.concurrent.atomic.AtomicInteger(0);
+        // 并行加载（§7.2.1）：按课程并发；每门课内部仍按采集器顺序串行。
+        // parallel=1 时走原来的串行路径，保持旧行为。
+        int parallel = Math.max(1, Math.min(8, payload.optInt("parallel", 1)));
+
+        if (parallel <= 1 || targets.size() <= 1) {
+            for (int i = 0; i < targets.size(); i++) {
                 checkCancel();
-                try {
-                    if (!enriched.contains(cid)) {
-                        courses.enrichSecrets(client, c);
-                        enriched.add(cid);
+                JSONObject c = targets.get(i);
+                String cid = c.getString("courseId");
+                String name = c.optString("courseName", cid);
+                progress(id, "course", cid, i, targets.size(), name, overallDone.get(), overallTotal);
+                boolean enriched = false;
+                for (Collector col : courseCols) {
+                    checkCancel();
+                    try {
+                        if (!enriched) {
+                            courses.enrichSecrets(client, c);
+                            enriched = true;
+                        }
+                        JSONArray arr = col.fetch(client, c);
+                        for (int j = 0; j < arr.length(); j++) items.put(arr.get(j));
+                    } catch (ApiException e) {
+                        if (Protocol.SESSION_EXPIRED.equals(e.code) || Protocol.RATE_LIMITED.equals(e.code)) throw e;
+                        failures.put(failure(cid, col.type(), e));
                     }
-                    JSONArray arr = col.fetch(client, c);
-                    for (int j = 0; j < arr.length(); j++) items.put(arr.get(j));
-                } catch (ApiException e) {
-                    if (Protocol.SESSION_EXPIRED.equals(e.code) || Protocol.RATE_LIMITED.equals(e.code)) throw e;
-                    failures.put(failure(cid, col.type(), e));
                 }
+                overallDone.incrementAndGet();
             }
-            overallDone++;
+        } else {
+            // 每门课一个任务；工作线程各自持有独立客户端（Cookie 复制、各自节流），
+            // 否则 ChaoxingClient 的 synchronized + 300ms 节流会把并发退化成串行。
+            java.util.concurrent.ExecutorService pool =
+                    java.util.concurrent.Executors.newFixedThreadPool(Math.min(parallel, targets.size()));
+            java.util.concurrent.atomic.AtomicReference<ApiException> fatal =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            ThreadLocal<ChaoxingClient> workerClient = ThreadLocal.withInitial(client::copyForWorker);
+            JSONArray[] courseItems = new JSONArray[targets.size()];
+            JSONArray[] courseFailures = new JSONArray[targets.size()];
+            java.util.List<java.util.concurrent.Future<?>> futures = new java.util.ArrayList<>();
+            try {
+                for (int i = 0; i < targets.size(); i++) {
+                    final int idx = i;
+                    futures.add(pool.submit(() -> {
+                        if (cancelFetch || fatal.get() != null) return;
+                        JSONObject c = targets.get(idx);
+                        String cid = c.getString("courseId");
+                        ChaoxingClient wc = workerClient.get();
+                        JSONArray myItems = new JSONArray();
+                        JSONArray myFailures = new JSONArray();
+                        boolean enriched = false;
+                        for (Collector col : courseCols) {
+                            if (cancelFetch || fatal.get() != null) break;
+                            try {
+                                if (!enriched) {
+                                    courses.enrichSecrets(wc, c);
+                                    enriched = true;
+                                }
+                                JSONArray arr = col.fetch(wc, c);
+                                for (int j = 0; j < arr.length(); j++) myItems.put(arr.get(j));
+                            } catch (ApiException e) {
+                                if (Protocol.SESSION_EXPIRED.equals(e.code) || Protocol.RATE_LIMITED.equals(e.code)) {
+                                    fatal.compareAndSet(null, e);
+                                    break;
+                                }
+                                myFailures.put(failure(cid, col.type(), e));
+                            }
+                        }
+                        courseItems[idx] = myItems;
+                        courseFailures[idx] = myFailures;
+                        int done = overallDone.incrementAndGet();
+                        progress(id, "course", cid, idx, targets.size(),
+                                c.optString("courseName", cid), done, overallTotal);
+                    }));
+                }
+                pool.shutdown();
+                // 等待期间轮询取消标志：fetch.cancel 能让并行批次尽快停下
+                while (!pool.awaitTermination(200, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                    if (cancelFetch) {
+                        pool.shutdownNow();
+                        throw new ApiException(Protocol.CANCELLED, "刷新已被用户取消", false);
+                    }
+                }
+                // 任务里的非 ApiException 异常会被 Future 吞掉，这里补捞一次
+                for (java.util.concurrent.Future<?> f : futures) {
+                    try {
+                        f.get();
+                    } catch (java.util.concurrent.ExecutionException ee) {
+                        Throwable cause = ee.getCause();
+                        if (cause instanceof ApiException ae) throw ae;
+                        throw new ApiException(Protocol.PARSE_ERROR,
+                                "并行刷新失败: " + (cause == null ? "未知错误" : cause.getMessage()), false);
+                    }
+                }
+            } catch (InterruptedException ie) {
+                pool.shutdownNow();
+                Thread.currentThread().interrupt();
+                throw new ApiException(Protocol.NETWORK_ERROR, "刷新被中断", true);
+            } finally {
+                pool.shutdownNow();
+            }
+            ApiException f = fatal.get();
+            if (f != null) throw f;
+            checkCancel();
+            // 按原课程顺序合并，避免并行完成后顺序乱掉
+            for (int i = 0; i < targets.size(); i++) {
+                if (courseItems[i] != null)
+                    for (int j = 0; j < courseItems[i].length(); j++) items.put(courseItems[i].get(j));
+                if (courseFailures[i] != null)
+                    for (int j = 0; j < courseFailures[i].length(); j++) failures.put(courseFailures[i].get(j));
+            }
         }
 
         for (Collector col : globalCols) {
             checkCancel();
-            progress(id, col.type(), null, 0, 1, col.label(), overallDone, overallTotal);
+            progress(id, col.type(), null, 0, 1, col.label(), overallDone.get(), overallTotal);
             try {
                 JSONArray arr = col.fetch(client, null);
                 for (int j = 0; j < arr.length(); j++) items.put(arr.get(j));
@@ -241,7 +363,7 @@ public class Main {
                 if (Protocol.SESSION_EXPIRED.equals(e.code) || Protocol.RATE_LIMITED.equals(e.code)) throw e;
                 failures.put(failure(null, col.type(), e));
             }
-            overallDone++;
+            overallDone.incrementAndGet();
         }
 
         result.put("items", items);

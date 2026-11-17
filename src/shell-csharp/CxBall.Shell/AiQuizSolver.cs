@@ -19,15 +19,21 @@ static class AiQuizSolver
         var exe = AiWorkSolver.RequireChromiumBrowser();
 
         progress?.Invoke(new AiWorkSolver.AiProgress("正在启动作答浏览器…"));
-        var port = await AiWorkSolver.EnsureBrowserAsync(exe);
-        var wsUrl = await AiWorkSolver.EnsurePageTargetAsync(port, url.AbsoluteUri);
+        var port = await AiWorkSolver.EnsureBrowserAsync(exe, ct);
+        ct.ThrowIfCancellationRequested();
+        var wsUrl = await AiWorkSolver.EnsurePageTargetAsync(port, url.AbsoluteUri, ct);
+        ct.ThrowIfCancellationRequested();
 
         await using var cdp = await CdpClient.ConnectAsync(wsUrl, TimeSpan.FromSeconds(10));
-        var cookieErrors = await AiWorkSolver.PrepareSessionAsync(cdp, cookies);
+        ct.ThrowIfCancellationRequested();
+        var cookieErrors = await AiWorkSolver.PrepareSessionAsync(cdp, cookies, ct);
+        ct.ThrowIfCancellationRequested();
 
         progress?.Invoke(new AiWorkSolver.AiProgress("正在打开练习页面…"));
         await cdp.CallAsync("Page.enable", null, 15000);
+        ct.ThrowIfCancellationRequested();
         await cdp.CallAsync("Page.navigate", new JsonObject { ["url"] = url.AbsoluteUri }, 20000);
+        ct.ThrowIfCancellationRequested();
         try { await cdp.CallAsync("Page.bringToFront", null, 5000); } catch (CoreException) { }
 
         progress?.Invoke(new AiWorkSolver.AiProgress("正在等待题目加载…"));

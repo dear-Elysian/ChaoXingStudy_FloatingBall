@@ -67,6 +67,32 @@ public class ChaoxingClient {
         return !cookieStore.getCookies().isEmpty();
     }
 
+    /** 导出当前内存 Cookie（并行刷新时给每个工作线程复制一份客户端用，不落盘）。 */
+    public synchronized JSONArray exportCookies() {
+        JSONArray arr = new JSONArray();
+        for (HttpCookie c : cookieStore.getCookies()) {
+            JSONObject o = new JSONObject();
+            o.put("name", c.getName());
+            o.put("value", c.getValue());
+            String d = c.getDomain();
+            o.put("domain", (d == null || d.isBlank()) ? ".chaoxing.com" : d);
+            o.put("path", c.getPath() == null ? "/" : c.getPath());
+            arr.put(o);
+        }
+        return arr;
+    }
+
+    /**
+     * 复制一个带相同 Cookie 的客户端，供并行刷新使用。
+     * 原客户端的方法都是 synchronized + 300ms 串行节流，直接多线程共用会退化成串行，
+     * 因此每个工作线程使用独立客户端（各自节流）。
+     */
+    public synchronized ChaoxingClient copyForWorker() {
+        ChaoxingClient c = new ChaoxingClient();
+        c.setCookies(exportCookies(), this.ua);
+        return c;
+    }
+
     /** GET，referer 可为 null */
     public synchronized String get(String url, String referer) throws ApiException {
         HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(url))
@@ -146,6 +172,9 @@ public class ChaoxingClient {
         }
         if (body.contains("滑块") || body.contains("安全验证")) {
             throw new ApiException(Protocol.RATE_LIMITED, "触发平台风控验证", false);
+        }
+        if (sc == 429) {
+            throw new ApiException(Protocol.RATE_LIMITED, "同时请求过多（HTTP 429）", true);
         }
         if (sc >= 400) {
             throw new ApiException(Protocol.NETWORK_ERROR, "HTTP " + sc, true);

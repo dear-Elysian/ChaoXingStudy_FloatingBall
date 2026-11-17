@@ -32,19 +32,20 @@ static class BrushService
 
         var exe = AiWorkSolver.RequireChromiumBrowser();
         Dbg("require browser ok: " + exe);
-        var port = await AiWorkSolver.EnsureBrowserAsync(exe);
+        var port = await AiWorkSolver.EnsureBrowserAsync(exe, ct);
         Dbg("browser port: " + port);
 
         var firstId = chapters.Count > 0 ? chapters[0]?["chapterId"]?.GetValue<string>() ?? "" : "";
         var firstUrl = StudyUrl(courseId, classId, cpi, enc, firstId);
         // 每次刷课新开一个标签页，避免复用上次遗留的卡死页面
         var wsUrl = await AiWorkSolver.CreatePageTargetAsync(port)
-                    ?? await AiWorkSolver.EnsurePageTargetAsync(port, firstUrl);
+                    ?? await AiWorkSolver.EnsurePageTargetAsync(port, firstUrl, ct);
         Dbg("target: " + wsUrl);
 
         await using var cdp = await CdpClient.ConnectAsync(wsUrl, TimeSpan.FromSeconds(10));
         Dbg("cdp connected");
-        await AiWorkSolver.PrepareSessionAsync(cdp, cookies);
+        await AiWorkSolver.PrepareSessionAsync(cdp, cookies, ct);
+        ct.ThrowIfCancellationRequested();
         Dbg("session prepared");
         await cdp.CallAsync("Page.enable", null, 15000);
         Dbg("page enabled");

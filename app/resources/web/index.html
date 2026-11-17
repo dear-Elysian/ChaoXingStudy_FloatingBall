@@ -168,6 +168,24 @@
     </div>
 
     <div class="card">
+      <div class="card-title">并行加载</div>
+      <label class="row"><input type="checkbox" id="set-parallel-enabled" checked> 启用并行加载</label>
+      <div class="row">
+        <span>并行多少项</span>
+        <select id="set-parallel-count">
+          <option value="2">2 项</option>
+          <option value="3">3 项</option>
+          <option value="4" selected>4 项</option>
+          <option value="5">5 项</option>
+          <option value="6">6 项</option>
+          <option value="7">7 项</option>
+          <option value="8">8 项</option>
+        </select>
+      </div>
+      <div class="hint">同时加载的课程数量；选择 7、8 项会增大平台限流风险。</div>
+    </div>
+
+    <div class="card">
       <div class="card-title">详情浏览器</div>
       <div class="row">
         <input type="text" id="set-browser-path" class="text-input" placeholder="未填写浏览器地址，请手动填写或点击「自动」">
@@ -298,6 +316,17 @@
     <div class="confirm-actions">
       <button id="btn-confirm-cancel" class="btn btn-ghost btn-sm">取消</button>
       <button id="btn-confirm-ok" class="btn btn-primary btn-sm">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 429 限流提示：第一行加粗居中 429，第二行给出降低并行的建议 -->
+<div id="rate-limit-overlay" class="confirm-overlay hidden">
+  <div class="confirm-box">
+    <div class="rate-limit-code">429</div>
+    <div class="rate-limit-text">同时请求过多建议降低并行的选项，并等待一会再次尝试</div>
+    <div class="confirm-actions">
+      <button id="btn-rate-limit-ok" class="btn btn-primary btn-sm">确定</button>
     </div>
   </div>
 </div>

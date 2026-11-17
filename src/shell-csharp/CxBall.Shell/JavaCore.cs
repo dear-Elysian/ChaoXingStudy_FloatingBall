@@ -248,18 +248,26 @@ public sealed class JavaCore : IDisposable
         // DeepClone 脱离响应树：调用方会把结果挂到别的 JsonObject 下，直接返回原节点会抛 "The node already has a parent"
         => (await RequestAsync("course.list", null, DefaultTimeoutMs))["courses"]?.DeepClone() as JsonArray ?? new JsonArray();
 
-    public Task<JsonObject> FetchStart(JsonArray modules, JsonArray courseIds, CancellationToken ct = default)
+    public Task<JsonObject> FetchStart(JsonArray modules, JsonArray courseIds, int parallel = 1, CancellationToken ct = default)
         => RequestAsync("fetch.start", new JsonObject
         {
             ["modules"] = modules,
             ["courseIds"] = courseIds,
+            ["parallel"] = parallel,
         }, FetchTimeoutMs, ct);
 
     public Task<JsonObject> FetchCancel() => RequestAsync("fetch.cancel", null, DefaultTimeoutMs);
 
     /// <summary>刷课规划（v3.28）：章节树 + 待完成章节任务点，由 C# 侧用本地浏览器执行。</summary>
-    public Task<JsonObject> BrushPlan(string courseId)
-        => RequestAsync("brush.plan", new JsonObject { ["courseId"] = courseId }, FetchTimeoutMs);
+    public Task<JsonObject> BrushPlan(string courseId, int parallel = 1)
+        => RequestAsync("brush.plan", new JsonObject
+        {
+            ["courseId"] = courseId,
+            ["parallel"] = parallel,
+        }, FetchTimeoutMs);
+
+    public Task<JsonObject> BrushPlanCancel()
+        => RequestAsync("brush.cancel", null, DefaultTimeoutMs);
 
     public void Dispose()
     {

@@ -281,6 +281,9 @@ sealed class Bridge
             //       此后一律以磁盘保存的 deselectedCourses 为准，新出现的课程仍默认选中。
             var courses = await _core.CourseList();
             if (loginProgress) LoginPhase(45, "正在获取作业与随堂练习…");
+            // §7.2.1：首次刷新固定只选前 10 门，且固定 3 门并发（3+3+3+1）；
+            // 之后按设置页的「并行加载」开关与项数执行。
+            var firstRefresh = state["deselectedCourses"] == null;
             var deselected = state["deselectedCourses"] as JsonArray;
             if (deselected == null)
             {
@@ -317,7 +320,12 @@ sealed class Bridge
             if (examOn) modules.Add("exam");
             if (discussionOn) modules.Add("discussion");
             if (brushOn) modules.Add("brush");
-            var result = await _core.FetchStart(modules, selected);
+            var parallel = firstRefresh
+                ? 3
+                : (s["parallelEnabled"]?.GetValue<bool>() == false
+                    ? 1
+                    : Math.Clamp(s["parallelCount"]?.GetValue<int>() ?? 4, 2, 8));
+            var result = await _core.FetchStart(modules, selected, parallel);
             // 优先使用 Java 返回的课程列表：已选课程带 stuenc/enc，随快照落盘（附录 B.4）；
             // 课程阶段失败时回落到阶段一列表，保证设置页仍能看到课程名。
             if (result["courses"] is not JsonArray fetched || fetched.Count == 0)
@@ -563,9 +571,17 @@ sealed class Bridge
         var courseName = "";
         try
         {
-            var planResp = await _core.BrushPlan(courseId);
+            // 章节检查复用「并行加载」设置；关闭并行时按 1 门串行检查
+            var settings = Settings.Get();
+            var parallel = settings["parallelEnabled"]?.GetValue<bool>() == false
+                ? 1
+                : Math.Clamp(settings["parallelCount"]?.GetValue<int>() ?? 4, 2, 8);
+            var planResp = await _core.BrushPlan(courseId, parallel);
             var plan = planResp["plan"] as JsonObject ?? planResp;   // Java 回包形如 {plan:{...}}
             courseName = plan["courseName"]?.GetValue<string>() ?? "";
+            // 规划期间用户已点终止：直接回 stopped，不再启动浏览器
+            if (cts.IsCancellationRequested)
+                return new JsonObject { ["kind"] = "stopped", ["courseName"] = courseName };
             var mode = plan["mode"]?.GetValue<string>() ?? "empty";
             if (mode != "start")
                 return new JsonObject { ["kind"] = mode == "finished" ? "finished" : "empty", ["courseName"] = courseName };
@@ -585,6 +601,11 @@ sealed class Bridge
                 ["total"] = p.Total,
             }));
             return await BrushService.RunAsync(plan, cookies, progress, cts.Token);
+        }
+        catch (CoreException ex) when (ex.Code == "CANCELLED")
+        {
+            // 规划阶段被 brush.cancel 中止：与本地取消同样回 stopped
+            return new JsonObject { ["kind"] = "stopped", ["courseName"] = courseName };
         }
         catch (OperationCanceledException)
         {
@@ -612,6 +633,8 @@ sealed class Bridge
     JsonObject BrushStop()
     {
         try { _brushCts?.Cancel(); } catch (ObjectDisposedException) { }
+        // 章节检查在 Java 工作线程里：发取消标志让它立刻停下，避免“停不干净”
+        _ = Task.Run(async () => { try { await _core.BrushPlanCancel(); } catch { } });
         return new JsonObject();
     }
 

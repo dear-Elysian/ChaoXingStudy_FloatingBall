@@ -40,6 +40,7 @@ const S = {
   discussionTab: "unfinished", // 主题讨论 Tab：unfinished（未结束）| all
   brushCourseId: "",           // 刷课下拉当前选中的课程（仅本机内存，不落盘）
   brushRunning: false,         // 刷课进行中：禁用确定按钮、接收进度事件
+  brushStopping: false,        // 已点终止：丢弃迟到的 brush.start 结果
   refreshing: false,
 };
 const $ = (id) => document.getElementById(id);
@@ -121,6 +122,17 @@ function cxAlert(msg, okText = "确定") {
   });
 }
 
+// 429 限流提示：第一行加粗居中「429」，第二行给出降低并行的建议
+function showRateLimit() {
+  return new Promise((resolve) => {
+    const overlay = $("rate-limit-overlay");
+    overlay.classList.remove("hidden");
+    const done = () => { overlay.classList.add("hidden"); resolve(); };
+    $("btn-rate-limit-ok").onclick = done;
+    overlay.onclick = (e) => { if (e.target === overlay) done(); };
+  });
+}
+
 // ---------- AI帮做进度弹窗（§7.9）：显示预计耗时，可强制终止 ----------
 // 预计不足 1 分钟显示秒数，否则向上取整到分钟
 function fmtEta(sec) {
@@ -160,8 +172,12 @@ $("btn-brush-stop").onclick = async () => {
   const btn = $("btn-brush-stop");
   if (btn.disabled) return;
   if (!(await cxConfirm("是否终止本次刷课？", true, "终止", "取消"))) return;
-  btn.disabled = true;
-  btn.textContent = "终止中…";
+  // 立即终止：不等后台规划/执行返回，先恢复界面；迟到结果由 brushStopping 丢弃
+  S.brushStopping = true;
+  S.brushRunning = false;
+  hideBrushProgress();
+  renderBrush();
+  toast("已终止刷课");
   try { await bridge.call("brush.stop"); } catch { }
 };
 
@@ -784,10 +800,15 @@ async function doRefresh(opts = {}) {
     if (fails) toast(`刷新完成，${fails} 项获取失败`);
     else if (!opts.quiet) toast("刷新完成");
   } catch (e) {
+    const limited = e.code === "RATE_LIMITED" || /429/.test(e.message || "");
     if (e.code !== "RATE_LIMITED" && !login)                    // 手动刷新失败也占冷却（§4.3）
       (S.account.state ??= {}).lastManualRefreshAt = Date.now();
-    if (!(login && e.code === "RATE_LIMITED" && opts.quiet))     // 登录冷却命中时静默沿用旧快照
+    if (limited) {
+      // 429：弹窗提示降低并行项数并稍后重试（登录后台静默刷新时不打扰）
+      if (!(login && opts.quiet)) await showRateLimit();
+    } else {
       toast(e.message || "刷新失败");
+    }
   } finally {
     S.refreshing = false;
     updateRefreshCooldown();
@@ -897,6 +918,10 @@ async function renderSettings() {
   $("set-login-auto").checked = s.loginAutoRefresh !== false;
   $("set-login-interval").value = String(s.loginRefreshIntervalSec ?? 15);
   $("set-login-interval").disabled = s.loginAutoRefresh === false;
+  // 并行加载：默认启用、默认 4 项
+  $("set-parallel-enabled").checked = s.parallelEnabled !== false;
+  $("set-parallel-count").value = String(s.parallelCount ?? 4);
+  $("set-parallel-count").disabled = s.parallelEnabled === false;
   // §7.6 缓存清理（互斥置灰）
   const cmode = s.cacheMode ?? "time";
   document.querySelector(`input[name="cache-mode"][value="${cmode}"]`).checked = true;
@@ -999,26 +1024,62 @@ async function toggleCourse(cid, checked) {
 // 累计进度只增不减；登录刷新只执行一次（C# login.open 内完成），前端不再重复 refresh。
 let _loginProgressActive = false;
 let _loginProgressPct = 0;   // 累计进度：只增不减，任何迟到/重复事件都不会让进度条回退
+let _loginProgressTarget = 0;   // 实际进度对应的目标百分比
+let _loginProgressSteps = 10;   // 总步数（课程 + 全局采集器），用于估算每步耗时
+let _loginAnimTimer = null;
+
+function stopLoginAnim() {
+  if (_loginAnimTimer) { clearInterval(_loginAnimTimer); _loginAnimTimer = null; }
+}
 
 function setLoginProgress(percent) {
   if (!_loginProgressActive) return;
   const bar = $("login-progress-bar");
   if (!bar) return;
   _loginProgressPct = Math.max(_loginProgressPct, Math.min(100, percent));
+  _loginProgressTarget = _loginProgressPct;
+  bar.style.width = _loginProgressPct.toFixed(1) + "%";
+}
+
+// 并行加载时进度事件会成批到达：不直接一次跳 N 步，而是按「预计每步 2.5s」平滑推进。
+// 实际更快 → 目标变远 → 自动加速追赶；实际更慢 → 停在目标位置等待，实际读取不受影响。
+function setLoginProgressTarget(percent) {
+  if (!_loginProgressActive) return;
+  _loginProgressTarget = Math.max(_loginProgressTarget, Math.min(100, percent));
+  if (!_loginAnimTimer) _loginAnimTimer = setInterval(tickLoginProgress, 50);
+}
+
+function tickLoginProgress() {
+  const bar = $("login-progress-bar");
+  if (!bar || !_loginProgressActive) { stopLoginAnim(); return; }
+  const gap = _loginProgressTarget - _loginProgressPct;
+  if (gap <= 0.05) {
+    _loginProgressPct = _loginProgressTarget;
+    bar.style.width = _loginProgressPct.toFixed(1) + "%";
+    stopLoginAnim();
+    return;
+  }
+  const stepPct = 53 / Math.max(1, _loginProgressSteps);   // 每个任务步占的进度
+  const baseSpeed = stepPct / 2.5;                         // 预计每步 2.5 秒
+  const speed = baseSpeed * Math.min(4, 1 + gap / Math.max(stepPct, 0.1));
+  _loginProgressPct = Math.min(_loginProgressTarget, _loginProgressPct + speed * 0.05);
   bar.style.width = _loginProgressPct.toFixed(1) + "%";
 }
 
 function startLoginProgress(percent = 0) {
   const wrap = $("login-progress");
   if (!wrap) return;
+  stopLoginAnim();
   _loginProgressActive = true;
   _loginProgressPct = Math.max(0, Math.min(100, percent));
+  _loginProgressTarget = _loginProgressPct;
   wrap.classList.remove("hidden");
   $("login-progress-bar").style.width = _loginProgressPct.toFixed(1) + "%";
 }
 
 function finishLoginProgress() {
   if (!_loginProgressActive) return;
+  stopLoginAnim();
   setLoginProgress(100);
   setTimeout(() => {
     const wrap = $("login-progress"), bar = $("login-progress-bar");
@@ -1030,8 +1091,10 @@ function finishLoginProgress() {
 
 /// 登录取消/失败：直接收起进度条，不显示「假完成」
 function resetLoginProgress() {
+  stopLoginAnim();
   _loginProgressActive = false;
   _loginProgressPct = 0;
+  _loginProgressTarget = 0;
   const wrap = $("login-progress"), bar = $("login-progress-bar");
   if (wrap) wrap.classList.add("hidden");
   if (bar) bar.style.width = "0%";
@@ -1045,7 +1108,9 @@ bridge.on("login.phase", (p) => {
 bridge.on("fetch.progress", (p) => {
   // 逐课程进度（stage=course，一门课一步）推进登录进度条；overall 字段跨模块累计
   if (!_loginProgressActive || !(p?.overallTotal > 0)) return;
-  setLoginProgress(45 + 53 * Math.min(1, (p.overallDone + 1) / p.overallTotal));
+  _loginProgressSteps = Math.max(1, p.overallTotal);
+  // 并行加载：先进目标，由 tickLoginProgress 按预计耗时平滑推进，避免一次跳 3 步
+  setLoginProgressTarget(45 + 53 * Math.min(1, (p.overallDone + 1) / p.overallTotal));
 });
 
 // ---------- 事件绑定 ----------
@@ -1111,6 +1176,7 @@ $("set-mod-brush").onchange = (e) => saveSettings({ modules: { brush: e.target.c
 $("brush-course").onchange = (e) => { S.brushCourseId = e.target.value; renderBrush(); };
 $("btn-brush-confirm").onclick = async () => {
   if (S.brushRunning) return toast("刷课正在进行中");
+  if (S.brushStopping) return toast("正在终止上一次刷课…");
   const c = checkedCourses().find((x) => x.courseId === S.brushCourseId);
   if (!c) return toast("请先在设置里勾选课程");
   const name = c.courseName || c.courseId;
@@ -1121,6 +1187,7 @@ $("btn-brush-confirm").onclick = async () => {
   showBrushProgress({ courseName: name, chapterLabel: "正在检查课程章节…" });
   try {
     const r = await bridge.call("brush.start", { courseId: c.courseId });
+    if (S.brushStopping) return;   // 用户已点终止：界面已恢复，丢弃迟到结果
     hideBrushProgress();
     const n = r.courseName || name;
     if (r.kind === "empty") await cxAlert(`该课程“${n}”暂未发现要刷的内容。`);
@@ -1128,8 +1195,11 @@ $("btn-brush-confirm").onclick = async () => {
     else if (r.kind === "stopped") toast("已终止刷课");
     else toast("刷课完成", 5000);
   } catch (e) {
+    if (S.brushStopping) return;
     hideBrushProgress();
-    if (e.code === "SESSION_EXPIRED") {
+    if (e.code === "RATE_LIMITED" || /429/.test(e.message || "")) {
+      await showRateLimit();
+    } else if (e.code === "SESSION_EXPIRED") {
       if (await cxConfirm((e.message || "学习通登录态已失效") + "\n是否现在登录？")) $("btn-login").click();
     } else if (e.code === "BROWSER_NOT_SET" || e.code === "AI_UNSUPPORTED_BROWSER") {
       if (await cxConfirm("还没有可用的浏览器地址。\n请到设置页的「详情浏览器」填写浏览器路径，或点击「自动」探测本机浏览器。\n是否现在前往设置？")) {
@@ -1142,6 +1212,7 @@ $("btn-brush-confirm").onclick = async () => {
       await cxAlert(e.message || "刷课失败");
     }
   } finally {
+    S.brushStopping = false;
     S.brushRunning = false;
     hideBrushProgress();
     renderBrush();
@@ -1159,6 +1230,16 @@ $("set-login-auto").onchange = (e) => {
 };
 $("set-login-interval").onchange = (e) =>
   saveSettings({ loginRefreshIntervalSec: parseInt(e.target.value, 10) });
+// 并行加载：默认启用 4 项；选择 7/8 项时提醒限流风险
+$("set-parallel-enabled").onchange = (e) => {
+  $("set-parallel-count").disabled = !e.target.checked;
+  saveSettings({ parallelEnabled: e.target.checked });
+};
+$("set-parallel-count").onchange = async (e) => {
+  const v = parseInt(e.target.value, 10);
+  if (v >= 7) await cxAlert("并行过大会增加平台限流的风险");
+  await saveSettings({ parallelCount: v });
+};
 // §7.6 缓存清理
 document.querySelectorAll('input[name="cache-mode"]').forEach((r) => {
   r.onchange = (e) => {
