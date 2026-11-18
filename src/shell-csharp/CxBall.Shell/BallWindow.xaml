@@ -7,13 +7,44 @@
         Title="学习通悬浮球">
     <Grid>
         <Grid.ContextMenu>
-            <ContextMenu>
-                <MenuItem Header="显示主面板" Click="ShowMain"/>
-                <Separator/>
+            <ContextMenu Background="#FFFFFFFF" BorderThickness="0" BorderBrush="Transparent">
+                <ContextMenu.Template>
+                    <ControlTemplate TargetType="{x:Type ContextMenu}">
+                        <!-- 自绘菜单容器：纯白底、无边框、无左侧图标栏/分隔线 -->
+                        <Border Background="{TemplateBinding Background}" CornerRadius="8"
+                                SnapsToDevicePixels="True">
+                            <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle"
+                                        Margin="0,4"/>
+                        </Border>
+                    </ControlTemplate>
+                </ContextMenu.Template>
+                <ContextMenu.ItemContainerStyle>
+                    <!-- 去掉菜单项左侧的图标/勾选预留列，只保留文字 -->
+                    <Style TargetType="{x:Type MenuItem}">
+                        <Setter Property="Padding" Value="14,7"/>
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="{x:Type MenuItem}">
+                                    <Border x:Name="Bd" Background="Transparent"
+                                            Padding="{TemplateBinding Padding}" SnapsToDevicePixels="True">
+                                        <ContentPresenter ContentSource="Header" RecognizesAccessKey="True"
+                                                          VerticalAlignment="Center"/>
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsHighlighted" Value="True">
+                                            <Setter TargetName="Bd" Property="Background" Value="#FFE8EEF9"/>
+                                        </Trigger>
+                                        <Trigger Property="IsEnabled" Value="False">
+                                            <Setter Property="Foreground" Value="#FF9CA3AF"/>
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                </ContextMenu.ItemContainerStyle>
+                <MenuItem Header="主面板" Click="ShowMain"/>
                 <MenuItem Header="刷新" Click="MenuRefresh"/>
-                <MenuItem Header="设置" Click="MenuSettings"/>
-                <MenuItem Header="退出登录" Click="MenuLogout"/>
-                <Separator/>
                 <MenuItem Header="退出程序" Click="QuitApp"/>
             </ContextMenu>
         </Grid.ContextMenu>

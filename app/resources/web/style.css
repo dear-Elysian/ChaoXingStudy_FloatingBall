@@ -161,6 +161,8 @@ body {
 /* 考试只有两个 Tab（§8.2.3）：居中排列，不铺满整行 */
 #exam-tabs { justify-content: center; gap: 24px; }
 #discussion-tabs { justify-content: center; gap: 24px; }
+#group-task-tabs { justify-content: center; gap: 24px; }
+.time-group-title { font-weight: 700; margin: 12px 0 6px; }
 
 /* ---------- 条目 ---------- */
 .item {
@@ -173,6 +175,7 @@ body {
 .item-meta { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
 .item-deadline { color: var(--danger); font-weight: bold; }
 .item-status-done { color: #10b981; }
+.item-status-unknown { color: #b45309; }
 .empty-tip { color: var(--muted); text-align: center; padding: 14px 0; }
 .exam-empty { color: var(--muted); text-align: center; padding: 18px 0; }
 
@@ -203,6 +206,7 @@ body {
 }
 .brush-hint { margin-top: 6px; font-size: 12px; }
 .brush-actions { display: flex; justify-content: center; margin-top: 10px; }
+.cache-actions { display: flex; justify-content: center; margin-top: 12px; }
 
 /* ---------- Toast ---------- */
 .toast {

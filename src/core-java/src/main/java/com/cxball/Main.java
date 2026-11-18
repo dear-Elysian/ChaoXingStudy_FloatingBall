@@ -30,9 +30,11 @@ public class Main {
     /** 采集器注册表（§5.2）：新增数据类型 = 实现 Collector + 在此注册，不动主流程。 */
     private final java.util.List<Collector> collectors = java.util.List.of(
             new AssignmentCollector(),
+            new PersonalTaskCollector(),
             new PracticeCollector(),
             new ExamCollector(),
             new DiscussionCollector(),
+            new GroupTaskCollector(),
             new BrushCollector(),
             noticeCollector);
     private final MetaCollector metaCollector = new MetaCollector();

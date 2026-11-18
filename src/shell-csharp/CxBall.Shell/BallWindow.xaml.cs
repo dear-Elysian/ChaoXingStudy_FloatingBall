@@ -108,8 +108,6 @@ public partial class BallWindow : Window
 
     // 右键菜单动作（§8.3）：经 MainWindow → Bridge 事件 → 前端执行
     void MenuRefresh(object sender, RoutedEventArgs e) => MainPanel?.MenuRefresh();
-    void MenuSettings(object sender, RoutedEventArgs e) => MainPanel?.MenuOpenSettings();
-    void MenuLogout(object sender, RoutedEventArgs e) => MainPanel?.MenuLogout();
 
     void QuitApp(object sender, RoutedEventArgs e) => Application.Current.Shutdown();
 }

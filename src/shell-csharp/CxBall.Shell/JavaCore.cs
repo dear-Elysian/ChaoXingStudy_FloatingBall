@@ -68,6 +68,9 @@ public sealed class JavaCore : IDisposable
                 StandardErrorEncoding = Encoding.UTF8,
             };
             psi.ArgumentList.Add("-Dfile.encoding=UTF-8");
+            // JDK 在 Windows 短文件名 TEMP 路径下可能无法创建内部 Unix socket。
+            // 使用已创建的便携数据目录，仅影响此 Java 进程，不改系统临时目录。
+            psi.ArgumentList.Add("-Djdk.net.unixdomain.tmpdir=" + Paths.DataDir);
             psi.ArgumentList.Add("-jar");
             psi.ArgumentList.Add(Paths.CoreJar);
             psi.ArgumentList.Add("--stdio");

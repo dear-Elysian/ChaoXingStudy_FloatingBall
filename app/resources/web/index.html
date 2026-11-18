@@ -38,11 +38,13 @@
   </div>
 
   <div class="panel-body" id="panel-body">
-    <!-- 作业模块（锁定显示，§7.3） -->
+    <!-- 作业模块（锁定显示，§7.3；可折叠，默认展开） -->
     <div class="card" id="mod-assignment">
-      <div class="card-title">作业</div>
-      <div class="tabs" id="assign-tabs"></div>
-      <div class="item-list" id="assign-list"></div>
+      <div class="card-title clickable" id="assign-title">作业 <span class="muted" id="assign-arrow">▾</span></div>
+      <div id="assign-body">
+        <div class="tabs" id="assign-tabs"></div>
+        <div class="item-list" id="assign-list"></div>
+      </div>
     </div>
 
     <!-- 随堂练习模块：四 Tab + 默认折叠，点击标题折叠/展开 -->
@@ -60,6 +62,15 @@
       <div class="hidden" id="discussion-body">
         <div class="tabs" id="discussion-tabs"></div>
         <div class="item-list" id="discussion-list"></div>
+      </div>
+    </div>
+
+    <!-- 分组任务模块：两 Tab（未结束 / 全部），默认折叠 -->
+    <div class="card" id="mod-groupTask">
+      <div class="card-title clickable" id="group-task-title">分组任务 <span class="muted" id="group-task-arrow">▸</span></div>
+      <div class="hidden" id="group-task-body">
+        <div class="tabs" id="group-task-tabs"></div>
+        <div class="item-list" id="group-task-list"></div>
       </div>
     </div>
 
@@ -231,6 +242,7 @@
       <label class="row"><input type="checkbox" id="set-mod-notice"> 消息</label>
       <label class="row"><input type="checkbox" id="set-mod-exam"> 考试</label>
       <label class="row"><input type="checkbox" id="set-mod-discussion"> 主题讨论</label>
+      <label class="row"><input type="checkbox" id="set-mod-groupTask"> 分组任务</label>
       <label class="row"><input type="checkbox" id="set-mod-brush"> 刷课 （测试版）</label>
     </div>
 
@@ -252,10 +264,14 @@
     </div>
 
     <div class="card">
-      <div class="card-title">作业时间显示</div>
+      <div class="card-title">剩余时间设置</div>
+      <div class="time-group-title">作业</div>
       <label class="row"><input type="checkbox" id="set-time-remaining"> 剩余时间</label>
       <label class="row"><input type="checkbox" id="set-time-deadline"> 截止日期</label>
-      <div class="hint">都不勾选则不显示时间，仅显示作业状态。</div>
+      <div class="time-group-title">分组任务</div>
+      <label class="row"><input type="checkbox" id="set-group-time-remaining"> 剩余时间</label>
+      <label class="row"><input type="checkbox" id="set-group-time-deadline"> 截止日期</label>
+      <div class="hint">都不勾选则显示状态</div>
     </div>
 
     <div class="card">
@@ -274,6 +290,7 @@
 
     <div class="card">
       <div class="card-title">缓存清理</div>
+      <label class="row"><input type="checkbox" id="set-cache-enabled" checked> 启用清理缓存</label>
       <label class="row"><input type="radio" name="cache-mode" value="time"> 按时间定期清理
         <select id="set-cache-days">
           <option value="1">1 天</option>
@@ -285,6 +302,7 @@
       <label class="row"><input type="radio" name="cache-mode" value="size"> 限制缓存大小
         <input type="number" id="set-cache-limit" min="100" step="50" class="num-input"> MB</label>
       <div class="hint">仅清理网页缓存，当前网页缓存约 <span id="cache-size">—</span></div>
+      <div class="cache-actions"><button id="btn-cache-clean" class="btn btn-danger">立即清理</button></div>
     </div>
 
     <div class="card">

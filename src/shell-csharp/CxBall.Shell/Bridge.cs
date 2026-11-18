@@ -21,7 +21,7 @@ sealed class Bridge
     CancellationTokenSource? _brushCts;                 // 刷课取消令牌（v3.28）
 
     /// <summary>首次登录默认勾选的课程数（§7.4）：只请求前 N 门详情，其余仅展示课程名。</summary>
-    const int DefaultSelectedCourses = 10;
+    const int DefaultSelectedCourses = 12;
 
     public Bridge(WebView2 web, JavaCore core, MainWindow main)
     {
@@ -54,7 +54,7 @@ sealed class Bridge
                 // 刷新：payload.login=true 表示「登录事件」触发（走登录冷却，§4.2）
                 "refresh" => await Refresh(manual: !(payload["login"]?.GetValue<bool>() ?? false)),
                 "settings.get" => Settings.Get(),
-                "settings.set" => SettingsSet(payload),
+                "settings.set" => await SettingsSet(payload),
                 "ignore.set" => IgnoreSet(payload),
                 "detail.open" => DetailOpen(payload),
                 "ai.status" => AiService.Status(),
@@ -73,6 +73,7 @@ sealed class Bridge
                 "window.resize" => ResizeWindow(payload),
                 "badge" => Badge(payload),
                 "cache.stats" => CacheStats(),
+                "cache.clean" => await Task.Run(CacheCleaner.RequestClean),
                 "app.autostart" => AutostartSet(payload),
                 "assets.upload" => AssetsUpload(payload),
                 "assets.reset" => AssetsReset(payload),
@@ -251,7 +252,7 @@ sealed class Bridge
             var s = Settings.Get();
             var state = AccountStore.LoadState(acct);
             var now = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-            // §7.4.1：新账号首次刷新固定只展示 30 天（与课程首次固定前 10 门同理）；
+            // §7.4.1：新账号首次刷新固定只展示 30 天（与课程首次固定前 12 门同理）；
             // 已存在课程选择说明该账号此前已完成过首次登录，直接按设置值处理。
             var firstNoticeLoad = state["noticeDaysInitialized"] == null && state["deselectedCourses"] == null;
             var noticeDays = firstNoticeLoad ? 30 : (s["noticeDays"]?.GetValue<int>() ?? 30);
@@ -276,12 +277,12 @@ sealed class Bridge
             await PushCookies(JsonNode.Parse(cookiesJson) as JsonArray ?? new JsonArray());
 
             // 阶段一：课程列表（单独调用，便于按勾选过滤后再请求各课程数据）
-            // §7.4：首次登录默认只勾选前 10 门（不足则全选），其余仅保留课程名、不请求详情，避免首刷过慢。
+            // §7.4：首次登录默认只勾选前 12 门（不足则全选），其余仅保留课程名、不请求详情，避免首刷过慢。
             //       仅当 deselectedCourses 尚不存在时视为首次（用户手动全选后会是空数组，不会误判）；
             //       此后一律以磁盘保存的 deselectedCourses 为准，新出现的课程仍默认选中。
             var courses = await _core.CourseList();
             if (loginProgress) LoginPhase(45, "正在获取作业与随堂练习…");
-            // §7.2.1：首次刷新固定只选前 10 门，且固定 3 门并发（3+3+3+1）；
+            // §7.2.1：首次刷新固定只选前 12 门，且固定 3 门并发（有空位即补下一门，不严格分批）；
             // 之后按设置页的「并行加载」开关与项数执行。
             var firstRefresh = state["deselectedCourses"] == null;
             var deselected = state["deselectedCourses"] as JsonArray;
@@ -313,12 +314,14 @@ sealed class Bridge
             var noticeOn = ModuleOn("notice");
             var examOn = ModuleOn("exam");
             var discussionOn = ModuleOn("discussion");
+            var groupTaskOn = ModuleOn("groupTask");
             var brushOn = ModuleOn("brush");
             var modules = new JsonArray("assignment");
             if (practiceOn) modules.Add("practice");
             if (noticeOn) modules.Add("notice");
             if (examOn) modules.Add("exam");
             if (discussionOn) modules.Add("discussion");
+            if (groupTaskOn) modules.Add("groupTask");
             if (brushOn) modules.Add("brush");
             var parallel = firstRefresh
                 ? 3
@@ -341,6 +344,7 @@ sealed class Bridge
                     var type = node?["type"]?.GetValue<string>();
                     if ((type == "practice" && !practiceOn) || (type == "notice" && !noticeOn)
                         || (type == "exam" && !examOn) || (type == "discussion" && !discussionOn)
+                        || (type == "groupTask" && !groupTaskOn)
                         || (type == "brush" && !brushOn))
                         items.Add(node?.DeepClone());
                 }
@@ -391,9 +395,15 @@ sealed class Bridge
         await _core.SetCookies(cookies, ua);
     }
 
-    JsonObject SettingsSet(JsonObject payload)
+    async Task<JsonObject> SettingsSet(JsonObject payload)
     {
-        if (payload["patch"] is JsonObject patch) Settings.Patch(patch);
+        if (payload["patch"] is JsonObject patch)
+        {
+            Settings.Patch(patch);
+            if (patch["cacheEnabled"]?.GetValue<bool>() == false) CacheCleaner.CancelPending();
+            if (new[] { "cacheEnabled", "cacheMode", "cacheDays", "cacheLimitMB" }.Any(patch.ContainsKey))
+                await Task.Run(CacheCleaner.CheckAndClean);
+        }
         return Settings.Get();
     }
 
@@ -477,6 +487,7 @@ sealed class Bridge
 
         var cts = new CancellationTokenSource();
         _aiSolveCts = cts;
+        using var cacheActivity = CacheCleaner.BeginActivity();
         try
         {
             var uri = ParseChaoxingUrl(payload);
@@ -568,6 +579,7 @@ sealed class Bridge
 
         var cts = new CancellationTokenSource();
         _brushCts = cts;
+        using var cacheActivity = CacheCleaner.BeginActivity();
         var courseName = "";
         try
         {
@@ -697,7 +709,7 @@ sealed class Bridge
 
     /// <summary>缓存状态（§7.6 设置页显示）。</summary>
     JsonObject CacheStats()
-        => new() { ["sizeMB"] = CacheCleaner.SizeMB(), ["lastCleanAt"] = Settings.Get()["lastCacheCleanAt"]?.GetValue<long>() ?? 0 };
+        => CacheCleaner.Stats();
 
     /// <summary>推送自定义事件给前端（悬浮球菜单、账号元数据更新等）。</summary>
     public void SendEvent(string name, JsonObject payload)

@@ -15,8 +15,9 @@ static class Settings
         ["loginAutoRefresh"] = true,
         ["loginRefreshIntervalSec"] = 15,
         ["manualThrottleSec"] = 15,
-        ["modules"] = new JsonObject { ["assignment"] = true, ["notice"] = true, ["exam"] = false, ["practice"] = false, ["discussion"] = false, ["brush"] = false },   // 首次登录只开作业/消息，其余按需勾选（§7.3；刷课默认关闭）
+        ["modules"] = new JsonObject { ["assignment"] = true, ["notice"] = true, ["exam"] = false, ["practice"] = false, ["discussion"] = false, ["groupTask"] = true, ["brush"] = false },   // 首次登录只开作业/消息/分组任务，其余按需勾选（§7.3；刷课默认关闭）
         ["timeDisplay"] = "remainingHours",          // remainingHours | deadline | both | none（§7.5，两个独立勾选）
+        ["groupTaskTimeDisplay"] = "remainingHours", // 分组任务剩余时间显示，规则同 timeDisplay（§7.5 / §15）
         ["background"] = new JsonObject { ["image"] = null, ["opacity"] = 75 },
         ["moduleOpacity"] = 100,                     // 模块卡片背景透明度 %（§7.5，统一调节，默认全不透明）
         ["autostart"] = false,                       // 开机自启动（§7.5，默认不勾选）
@@ -27,6 +28,7 @@ static class Settings
         ["aiThinking"] = false,                      // 启用思考链（§7.9，默认不勾选；仅 DeepSeek 系接口显式开启）
         ["noticeDays"] = 30,                         // 消息展示时长：7|14|30|90|180|360 天（§7.4.1，默认 30）
         ["ballImage"] = null,                        // 悬浮球自定义图案文件名（data/assets 内），null = 默认
+        ["cacheEnabled"] = true,                     // 清理总开关，旧配置默认启用
         ["cacheMode"] = "time",                      // time | size（§7.6，互斥）
         ["cacheDays"] = 7,                           // 按时间清理周期：1|3|7|15|30
         ["cacheLimitMB"] = 200,                      // 按大小清理阈值，最小 100

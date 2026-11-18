@@ -38,13 +38,14 @@ const S = {
   practiceTab: "unfinished",   // 随堂练习 Tab：unfinished | expired | ignored | all
   examTab: "unfinished",       // 考试 Tab：unfinished | all
   discussionTab: "unfinished", // 主题讨论 Tab：unfinished（未结束）| all
+  groupTaskTab: "unfinished",  // 分组任务 Tab：unfinished（未结束）| all
   brushCourseId: "",           // 刷课下拉当前选中的课程（仅本机内存，不落盘）
   brushRunning: false,         // 刷课进行中：禁用确定按钮、接收进度事件
   brushStopping: false,        // 已点终止：丢弃迟到的 brush.start 结果
   refreshing: false,
 };
 const $ = (id) => document.getElementById(id);
-const itemKey = (it) => `${it.type}|${it.courseId}|${it.title}`;
+const itemKey = (it) => `${it.type}|${it.personalTask ? "personal|" : ""}${it.courseId}|${it.title}`;
 // 忽略列表兼容两种格式：旧版纯字符串 key、新版 {key,ts}（§8.2.1 按操作时间排序）
 const ignoredEntries = () => (S.account?.state?.ignored || []);
 const entryKey = (e) => (typeof e === "string" ? e : e?.key);
@@ -317,6 +318,7 @@ function renderPanel() {
   $("mod-notice").classList.toggle("hidden", mods.notice === false);
   $("mod-exam").classList.toggle("hidden", mods.exam === false);
   $("mod-discussion").classList.toggle("hidden", mods.discussion === false);
+  $("mod-groupTask").classList.toggle("hidden", mods.groupTask === false);
   $("mod-brush").classList.toggle("hidden", mods.brush !== true);   // 刷课默认不勾选：缺失/未开启都不显示
 
   renderAssignments();
@@ -324,6 +326,7 @@ function renderPanel() {
   renderNotices();
   renderExams();
   renderDiscussions();
+  renderGroupTasks();
   renderBrush();
 
   const cls = classify();
@@ -381,7 +384,7 @@ function renderAssignments() {
     el.className = "item";
     const t = isUnfinished(it) ? timeText(it) : "";
     const deadlineHtml = t ? `<span class="item-deadline">${t}</span>` : "";
-    const statusCls = isUnfinished(it) ? "" : " item-status-done";
+    const statusCls = it.submissionQueryFailed ? " item-status-unknown" : isUnfinished(it) ? "" : " item-status-done";
     el.innerHTML = `
       <div class="item-title" title="${escapeHtml(it.title)}">${escapeHtml(it.title)}</div>
       <div class="item-meta">
@@ -562,6 +565,84 @@ function renderDiscussions() {
   }
 }
 
+// 分组任务：两 Tab（未结束 / 全部）；未结束 = 仍有剩余时间（已结束的放全部）
+// 分组任务剩余时间：与作业同一套规则（剩余小时 / 截止日期 / 两者 / 都不显示）
+function groupTaskTimeText(it) {
+  if (!it.deadline) return "";
+  const mode = S.settings?.groupTaskTimeDisplay ?? "remainingHours";
+  if (mode === "none") return "";
+  const d = new Date(it.deadline);
+  const p = (n) => String(n).padStart(2, "0");
+  const deadlineStr = `截止 ${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  if (mode === "deadline") return deadlineStr;
+  const ms = it.deadline - Date.now();
+  if (ms <= 0) return mode === "both" ? `已截止 · ${deadlineStr}` : "已截止";
+  const mins = Math.floor(ms / 60000);
+  const remainStr = mins < 60 ? `剩 ${Math.max(1, mins)} 分钟` : `剩 ${Math.floor(mins / 60)} 小时`;
+  return mode === "both" ? `${remainStr} · ${deadlineStr}` : remainStr;
+}
+
+function renderGroupTasks() {
+  const deselected = new Set(S.account?.state?.deselectedCourses || []);   // §7.4：未选课程不展示
+  const all = (S.snapshot?.items || []).filter((i) =>
+    i.type === "groupTask" && !deselected.has(i.courseId));
+  const now = Date.now();
+  const ended = (it) => it.ended === true || (it.deadline > 0 && it.deadline <= now);
+  const unfinished = all.filter((it) => !ended(it));
+
+  const tabs = [
+    ["unfinished", `未结束 ${unfinished.length}`],
+    ["all", `全部 ${all.length}`],
+  ];
+  $("group-task-tabs").innerHTML = "";
+  for (const [key, label] of tabs) {
+    const el = document.createElement("span");
+    el.className = "tab" + (S.groupTaskTab === key ? " active" : "");
+    el.textContent = label;
+    el.onclick = () => { S.groupTaskTab = key; renderGroupTasks(); };
+    $("group-task-tabs").appendChild(el);
+  }
+
+  const list = $("group-task-list");
+  list.innerHTML = "";
+  const items = S.groupTaskTab === "unfinished" ? unfinished : all;
+  if (!items.length) {
+    list.innerHTML = `<div class="empty-tip">暂无分组任务</div>`;
+    return;
+  }
+  // 未结束按截止时间从近到远；「全部」中已结束的置后
+  items.sort((a, b) => {
+    if (S.groupTaskTab === "all") {
+      const d = (ended(a) ? 1 : 0) - (ended(b) ? 1 : 0);
+      if (d) return d;
+    }
+    return (a.deadline || Number.MAX_SAFE_INTEGER) - (b.deadline || Number.MAX_SAFE_INTEGER);
+  });
+  for (const it of items) {
+    const el = document.createElement("div");
+    el.className = "item";
+    const isEnded = ended(it);
+    const gtTime = groupTaskTimeText(it);
+    // 已结束的分组任务统一绿字「已结束」，不再显示红字「已截止」
+    const metaRight = isEnded
+      ? `<span class="item-status-done">已结束</span>`
+      : (gtTime
+          ? `<span class="item-deadline">${escapeHtml(gtTime)}</span>`
+          : `<span class="item-deadline">${escapeHtml(it.status || "")}</span>`);
+    el.innerHTML = `
+      <div class="item-title" title="${escapeHtml(it.title)}">${escapeHtml(it.title)}</div>
+      <div class="item-meta">
+        <span>${escapeHtml(courseNameOf(it))}</span>
+        <span>${metaRight}</span>
+      </div>`;
+    el.oncontextmenu = (e) => {
+      e.preventDefault();
+      showGroupTaskCtxMenu(e.clientX, e.clientY, it);
+    };
+    list.appendChild(el);
+  }
+}
+
 function renderNotices() {
   const list = $("notice-list");
   list.innerHTML = "";
@@ -712,6 +793,11 @@ function showExamCtxMenu(x, y, it) {
   menu.classList.remove("hidden");
 }
 
+// 分组任务右键：仅「详情」，用设置里的浏览器打开对应任务页
+function showGroupTaskCtxMenu(x, y, it) {
+  showExamCtxMenu(x, y, it);
+}
+
 // 主题讨论右键：仅「详情」，用设置里的浏览器打开讨论详情页
 function showDiscussionCtxMenu(x, y, it) {
   showExamCtxMenu(x, y, it);
@@ -737,6 +823,7 @@ document.addEventListener("click", hideCtxMenu);
 // AI帮做（§7.9）：打开作答页 → 只读抓题 → 一次批量请求模型 → 自动填入答案。
 // 不自动提交；作业与随堂练习共用入口，随堂练习走专用题型范围与系统提示词（判定在 C# 侧完成）。
 async function openAiSolve(it) {
+  if (it.personalTask) { await cxAlert("暂不支持完成个人任务"); return; }
   if (!it.link) { toast("该条目缺少详情链接，请刷新后重试"); return; }
   if (S.aiSolving) { toast("AI 正在作答，请稍候…"); return; }
   S.aiSolving = true;
@@ -785,6 +872,17 @@ async function openAiSolve(it) {
 // opts.login=true → 登录事件触发的刷新（§4.1/§4.2，走登录冷却，不计入手动节流）
 async function doRefresh(opts = {}) {
   const login = !!opts.login;
+  // 手动刷新（按钮 / 悬浮球右键菜单）统一走手动节流（§4.2）
+  if (!login) {
+    const last = S.account?.state?.lastManualRefreshAt ?? 0;
+    const throttle = (S.settings?.manualThrottleSec ?? 15) * 1000;
+    const remain = Math.ceil((last + throttle - Date.now()) / 1000);
+    if (remain > 0) {
+      toast(`${remain} 秒内已刷新过一次`);
+      updateRefreshCooldown();
+      return;
+    }
+  }
   if (S.refreshing) return;
   S.refreshing = true;
   const btn = $("btn-refresh");
@@ -797,7 +895,10 @@ async function doRefresh(opts = {}) {
     if (!login) (S.account.state ??= {}).lastManualRefreshAt = Date.now();   // 本地同步冷却时间戳
     renderPanel();
     const fails = r.snapshot?.failures?.length || 0;
-    if (fails) toast(`刷新完成，${fails} 项获取失败`);
+    const unknown = (r.snapshot?.items || []).filter((it) => it.personalTask && it.submissionQueryFailed
+      && !(S.account?.state?.deselectedCourses || []).includes(it.courseId)).length;
+    if (unknown) toast(`刷新完成${fails ? `，${fails} 项获取失败` : ""}，${unknown} 项个人任务提交状态未知，请在作业「全部」中查看`);
+    else if (fails) toast(`刷新完成，${fails} 项获取失败`);
     else if (!opts.quiet) toast("刷新完成");
   } catch (e) {
     const limited = e.code === "RATE_LIMITED" || /429/.test(e.message || "");
@@ -912,6 +1013,7 @@ async function renderSettings() {
   $("set-mod-notice").checked = s.modules?.notice !== false;
   $("set-mod-exam").checked = s.modules?.exam !== false;
   $("set-mod-discussion").checked = s.modules?.discussion !== false;
+  $("set-mod-groupTask").checked = s.modules?.groupTask !== false;
   $("set-mod-brush").checked = s.modules?.brush === true;   // 默认不勾选：旧配置缺失也保持关闭
   $("set-throttle").value = String(s.manualThrottleSec ?? 15);
   // §7.2 登录自动刷新
@@ -927,8 +1029,8 @@ async function renderSettings() {
   document.querySelector(`input[name="cache-mode"][value="${cmode}"]`).checked = true;
   $("set-cache-days").value = String(s.cacheDays ?? 7);
   $("set-cache-limit").value = s.cacheLimitMB ?? 200;
-  $("set-cache-days").disabled = cmode !== "time";
-  $("set-cache-limit").disabled = cmode !== "size";
+  $("set-cache-enabled").checked = s.cacheEnabled !== false;
+  updateCacheControls();
   bridge.call("cache.stats").then((st) => { $("cache-size").textContent = st.sizeMB + " MB"; }).catch(() => {});
   // §7.1 账号信息
   const meta2 = S.account?.meta || {};
@@ -940,6 +1042,9 @@ async function renderSettings() {
   const td = s.timeDisplay ?? "remainingHours";
   $("set-time-remaining").checked = td === "remainingHours" || td === "both";
   $("set-time-deadline").checked = td === "deadline" || td === "both";
+  const gtd = s.groupTaskTimeDisplay ?? "remainingHours";
+  $("set-group-time-remaining").checked = gtd === "remainingHours" || gtd === "both";
+  $("set-group-time-deadline").checked = gtd === "deadline" || gtd === "both";
 
   // 悬浮球图案预览（§7.5）：未自定义时展示程序内置默认图案
   const bp = $("ball-preview");
@@ -1145,8 +1250,10 @@ function toggleCollapse(arrowId, contentId) {
   const arrow = $(arrowId);
   if (arrow) arrow.textContent = list.classList.contains("hidden") ? "▸" : "▾";
 }
+$("assign-title").onclick = () => toggleCollapse("assign-arrow", "assign-body");
 $("exam-title").onclick = () => toggleCollapse("exam-arrow", "exam-body");
 $("discussion-title").onclick = () => toggleCollapse("discussion-arrow", "discussion-body");
+$("group-task-title").onclick = () => toggleCollapse("group-task-arrow", "group-task-body");
 $("practice-title").onclick = () => toggleCollapse("practice-arrow", "practice-body");
 $("notice-title").onclick = () => toggleCollapse("notice-arrow", "notice-list");
 $("brush-title").onclick = () => toggleCollapse("brush-arrow", "brush-body");
@@ -1171,6 +1278,7 @@ $("set-mod-practice").onchange = (e) => saveSettings({ modules: { practice: e.ta
 $("set-mod-notice").onchange = (e) => saveSettings({ modules: { notice: e.target.checked } });
 $("set-mod-exam").onchange = (e) => saveSettings({ modules: { exam: e.target.checked } });
 $("set-mod-discussion").onchange = (e) => saveSettings({ modules: { discussion: e.target.checked } });
+$("set-mod-groupTask").onchange = (e) => saveSettings({ modules: { groupTask: e.target.checked } });
 $("set-mod-brush").onchange = (e) => saveSettings({ modules: { brush: e.target.checked } });
 // 刷课卡片：先二次确认，再由 C# 规划章节并用本地浏览器逐章执行（v3.28）
 $("brush-course").onchange = (e) => { S.brushCourseId = e.target.value; renderBrush(); };
@@ -1241,11 +1349,44 @@ $("set-parallel-count").onchange = async (e) => {
   await saveSettings({ parallelCount: v });
 };
 // §7.6 缓存清理
+let cacheCleaning = false;
+function updateCacheControls() {
+  const enabled = $("set-cache-enabled").checked;
+  const mode = document.querySelector('input[name="cache-mode"]:checked')?.value ?? "time";
+  document.querySelectorAll('input[name="cache-mode"]').forEach((r) => { r.disabled = !enabled; });
+  $("set-cache-days").disabled = !enabled || mode !== "time";
+  $("set-cache-limit").disabled = !enabled || mode !== "size";
+  $("btn-cache-clean").disabled = !enabled || cacheCleaning;
+}
+$("set-cache-enabled").onchange = async (e) => {
+  updateCacheControls();
+  try { await saveSettings({ cacheEnabled: e.target.checked }); }
+  catch { $("set-cache-enabled").checked = S.settings?.cacheEnabled !== false; updateCacheControls(); }
+};
+$("btn-cache-clean").onclick = async () => {
+  if (cacheCleaning || !$("set-cache-enabled").checked) return;
+  cacheCleaning = true;
+  updateCacheControls();
+  try {
+    const confirmed = await cxConfirm("确定立即清理网页缓存吗？\n将清理内嵌浏览器及 AI帮做、刷课专用浏览器的网页缓存。下次加载网页可能稍慢。\n清理成功后，按时间定期清理将从本次清理完成时重新计时。", true, "确定", "取消");
+    if (!confirmed) return;
+    const result = await bridge.call("cache.clean");
+    $("cache-size").textContent = result.sizeMB + " MB";
+    if (result.kind === "disabled") toast("请先启用清理缓存");
+    else if (result.kind === "pending") toast(result.reason === "active_task"
+      ? "AI帮做或刷课正在运行，结束后自动清理；成功后重新计时"
+      : result.reason === "files_in_use"
+        ? "已清理可删除的缓存，部分文件仍被占用；释放后自动重试"
+        : "缓存清理未完成，请稍后重试");
+    else toast("网页缓存已清理，按时间清理已重新计时");
+    if (result.lastCleanAt != null && S.settings) S.settings.lastCacheCleanAt = result.lastCleanAt;
+  } catch (e) { toast(e.message || "清理失败，请稍后重试"); }
+  finally { cacheCleaning = false; updateCacheControls(); }
+};
 document.querySelectorAll('input[name="cache-mode"]').forEach((r) => {
   r.onchange = (e) => {
     const m = e.target.value;
-    $("set-cache-days").disabled = m !== "time";
-    $("set-cache-limit").disabled = m !== "size";
+    updateCacheControls();
     saveSettings({ cacheMode: m });
   };
 });
@@ -1273,13 +1414,19 @@ $("set-throttle").onchange = async (e) => {
   }
   await saveSettings({ manualThrottleSec: v });
 };
-// 作业时间显示：两个勾选框组合成 remainingHours | deadline | both | none
+// 剩余时间设置：作业与分组任务各两个勾选，独立组合成 remainingHours | deadline | both | none
 const saveTimeDisplay = () => {
   const r = $("set-time-remaining").checked, d = $("set-time-deadline").checked;
   saveSettings({ timeDisplay: r && d ? "both" : r ? "remainingHours" : d ? "deadline" : "none" });
 };
 $("set-time-remaining").onchange = saveTimeDisplay;
 $("set-time-deadline").onchange = saveTimeDisplay;
+const saveGroupTimeDisplay = () => {
+  const r = $("set-group-time-remaining").checked, d = $("set-group-time-deadline").checked;
+  saveSettings({ groupTaskTimeDisplay: r && d ? "both" : r ? "remainingHours" : d ? "deadline" : "none" });
+};
+$("set-group-time-remaining").onchange = saveGroupTimeDisplay;
+$("set-group-time-deadline").onchange = saveGroupTimeDisplay;
 $("course-all").onclick = async () => {
   const st = (S.account.state ??= {});
   st.deselectedCourses = [];
@@ -1654,6 +1801,13 @@ $("btn-logout").onclick = async () => {
 async function saveSettings(patch) {
   S.settings = await bridge.call("settings.set", { patch });
   renderPanel();
+  if (["cacheEnabled", "cacheMode", "cacheDays", "cacheLimitMB"].some((key) => key in patch)) {
+    const stats = await bridge.call("cache.stats");
+    $("cache-size").textContent = stats.sizeMB + " MB";
+    if (stats.pending) toast(stats.reason === "active_task"
+      ? "AI帮做或刷课正在运行，结束后自动清理"
+      : stats.reason === "files_in_use" ? "部分缓存文件被占用，释放后自动重试" : "缓存清理未完成，请稍后重试");
+  }
 }
 
 // ---------- 窗口缩放（§8.2.6）：边缘/角命中后交给系统原生缩放（WebView2 挡住了 WPF 边框） ----------
@@ -1678,11 +1832,12 @@ async function reloadInit() {
   return r;
 }
 
-// 截止状态会随时间变化：主面板可见时每 60 秒本地重算作业/练习分类，不触发网络请求
+// 截止状态会随时间变化：主面板可见时每 60 秒本地重算作业/练习/分组任务，不触发网络请求
 setInterval(() => {
   if ($("view-panel").classList.contains("hidden") || !S.snapshot || S.refreshing) return;
   renderAssignments();
   renderPractices();
+  renderGroupTasks();
   bridge.call("badge", { unfinished: classify().unfinished.length });
 }, 60000);
 

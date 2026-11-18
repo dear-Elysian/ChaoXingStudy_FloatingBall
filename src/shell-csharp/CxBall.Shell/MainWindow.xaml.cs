@@ -227,8 +227,6 @@ public partial class MainWindow : Window
     // ---------- 悬浮球右键菜单（§8.3）：展开主面板并转发前端 ----------
 
     public void MenuRefresh() { ShowPanel(); _bridge?.SendEvent("menu.action", new JsonObject { ["name"] = "refresh" }); }
-    public void MenuOpenSettings() { ShowPanel(); _bridge?.SendEvent("menu.action", new JsonObject { ["name"] = "settings" }); }
-    public void MenuLogout() { ShowPanel(); _bridge?.SendEvent("menu.action", new JsonObject { ["name"] = "logout" }); }
 
     public void NotifyBallBadge(int unfinished)
     {

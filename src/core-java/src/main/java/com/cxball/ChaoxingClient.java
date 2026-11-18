@@ -67,6 +67,13 @@ public class ChaoxingClient {
         return !cookieStore.getCookies().isEmpty();
     }
 
+    public synchronized String cookieValue(String name) {
+        for (HttpCookie c : cookieStore.getCookies()) {
+            if (name.equals(c.getName())) return c.getValue();
+        }
+        return "";
+    }
+
     /** 导出当前内存 Cookie（并行刷新时给每个工作线程复制一份客户端用，不落盘）。 */
     public synchronized JSONArray exportCookies() {
         JSONArray arr = new JSONArray();
