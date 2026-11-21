@@ -27,13 +27,14 @@ public class Main {
     private final CourseCollector courses = new CourseCollector();
     private final BrushPlanner brushPlanner = new BrushPlanner();
     private final NoticeCollector noticeCollector = new NoticeCollector();
+    private final DiscussionCollector discussionCollector = new DiscussionCollector();
     /** 采集器注册表（§5.2）：新增数据类型 = 实现 Collector + 在此注册，不动主流程。 */
     private final java.util.List<Collector> collectors = java.util.List.of(
             new AssignmentCollector(),
             new PersonalTaskCollector(),
             new PracticeCollector(),
             new ExamCollector(),
-            new DiscussionCollector(),
+            discussionCollector,
             new GroupTaskCollector(),
             new BrushCollector(),
             noticeCollector);
@@ -196,6 +197,9 @@ public class Main {
         JSONArray modules = payload.optJSONArray("modules");
         java.util.Set<String> enabled = new java.util.HashSet<>();
         if (modules != null) for (int i = 0; i < modules.length(); i++) enabled.add(modules.optString(i));
+
+        // 主题讨论回复判定：当前账号昵称（C# 从 meta.nickname 传入），只用于精确比对回复人。
+        discussionCollector.setUserName(payload.optString("userName", ""));
 
         // courseIds 缺省 = 不过滤（全部课程）；显式空数组 = 一门课程也不抓（收件箱仍会刷新）
         boolean filterCourses = payload.has("courseIds") && !payload.isNull("courseIds");

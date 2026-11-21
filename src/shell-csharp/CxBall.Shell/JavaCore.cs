@@ -251,12 +251,14 @@ public sealed class JavaCore : IDisposable
         // DeepClone 脱离响应树：调用方会把结果挂到别的 JsonObject 下，直接返回原节点会抛 "The node already has a parent"
         => (await RequestAsync("course.list", null, DefaultTimeoutMs))["courses"]?.DeepClone() as JsonArray ?? new JsonArray();
 
-    public Task<JsonObject> FetchStart(JsonArray modules, JsonArray courseIds, int parallel = 1, CancellationToken ct = default)
+    public Task<JsonObject> FetchStart(JsonArray modules, JsonArray courseIds, int parallel = 1,
+        string userName = "", CancellationToken ct = default)
         => RequestAsync("fetch.start", new JsonObject
         {
             ["modules"] = modules,
             ["courseIds"] = courseIds,
             ["parallel"] = parallel,
+            ["userName"] = userName,
         }, FetchTimeoutMs, ct);
 
     public Task<JsonObject> FetchCancel() => RequestAsync("fetch.cancel", null, DefaultTimeoutMs);

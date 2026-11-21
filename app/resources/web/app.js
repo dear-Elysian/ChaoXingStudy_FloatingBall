@@ -37,15 +37,20 @@ const S = {
   tab: "unfinished",   // 作业 Tab：unfinished | expired | ignored | all
   practiceTab: "unfinished",   // 随堂练习 Tab：unfinished | expired | ignored | all
   examTab: "unfinished",       // 考试 Tab：unfinished | all
-  discussionTab: "unfinished", // 主题讨论 Tab：unfinished（未结束）| all
-  groupTaskTab: "unfinished",  // 分组任务 Tab：unfinished（未结束）| all
+  discussionTab: "unfinished", // 主题讨论 Tab：unfinished（未结束）| ignored（已忽略）| all
+  groupTaskTab: "unfinished",  // 分组任务 Tab：unfinished（未结束）| ignored（已忽略）| all
   brushCourseId: "",           // 刷课下拉当前选中的课程（仅本机内存，不落盘）
   brushRunning: false,         // 刷课进行中：禁用确定按钮、接收进度事件
   brushStopping: false,        // 已点终止：丢弃迟到的 brush.start 结果
   refreshing: false,
 };
 const $ = (id) => document.getElementById(id);
-const itemKey = (it) => `${it.type}|${it.personalTask ? "personal|" : ""}${it.courseId}|${it.title}`;
+const itemKey = (it) => {
+  // 讨论可能有多条同名「主题讨论」，必须用 uuid 区分；分组任务用 activeId 区分同名任务。
+  if (it.type === "discussion" && it.uuid) return `discussion|${it.courseId}|${it.uuid}`;
+  if (it.type === "groupTask" && it.activeId) return `groupTask|${it.courseId}|${it.activeId}`;
+  return `${it.type}|${it.personalTask ? "personal|" : ""}${it.courseId}|${it.title}`;
+};
 // 忽略列表兼容两种格式：旧版纯字符串 key、新版 {key,ts}（§8.2.1 按操作时间排序）
 const ignoredEntries = () => (S.account?.state?.ignored || []);
 const entryKey = (e) => (typeof e === "string" ? e : e?.key);
@@ -54,7 +59,7 @@ const ignoredTs = (key) => {
   const e = ignoredEntries().find((x) => entryKey(x) === key);
   return e && typeof e === "object" ? (e.ts ?? 0) : 0;
 };
-const UNFINISHED = ["未交", "未完成", "待做"];
+const UNFINISHED = ["未交", "未完成", "待做", "待重做"];
 const isUnfinished = (it) => UNFINISHED.includes(it.status);
 
 // ---------- 视图切换 ----------
@@ -213,6 +218,8 @@ function classify() {
     if (ignored.has(itemKey(it))) { r.ignored.push(it); continue; }
     r.all.push(it);
     if (isUnfinished(it)) {
+      // 「待重做」始终归入未完成（即使截止时间已过，也要提示重做）
+      if (it.status === "待重做") { r.unfinished.push(it); continue; }
       // 剩余不足 1 分钟即归入已过期；deadline=0 表示已过期但无精确时间（附录 A.2）
       const dl = assignmentDeadline(it);
       (dl != null && dl - now < 60000 ? r.expired : r.unfinished).push(it);
@@ -275,6 +282,16 @@ function timeText(it) {
   const mins = Math.floor(ms / 60000);
   const remainStr = mins < 60 ? `剩 ${Math.max(1, mins)} 分钟` : `剩 ${Math.floor(mins / 60)} 小时`;
   return mode === "both" ? `${remainStr} · ${deadlineStr}` : remainStr;
+}
+
+// 待重做：有剩余时间就显示剩余时间（不跟随「剩余时间设置」）；没有剩余时间时回落为状态文字「待重做」
+function assignmentRemainText(it) {
+  const deadline = assignmentDeadline(it);
+  if (!deadline) return "";
+  const ms = deadline - Date.now();
+  if (ms <= 0) return "";
+  const mins = Math.floor(ms / 60000);
+  return mins < 60 ? `剩 ${Math.max(1, mins)} 分钟` : `剩 ${Math.floor(mins / 60)} 小时`;
 }
 
 function courseNameOf(it) {
@@ -382,7 +399,9 @@ function renderAssignments() {
   for (const it of items) {
     const el = document.createElement("div");
     el.className = "item";
-    const t = isUnfinished(it) ? timeText(it) : "";
+    const t = it.status === "待重做"
+      ? (assignmentRemainText(it) || "待重做")
+      : isUnfinished(it) ? timeText(it) : "";
     const deadlineHtml = t ? `<span class="item-deadline">${t}</span>` : "";
     const statusCls = it.submissionQueryFailed ? " item-status-unknown" : isUnfinished(it) ? "" : " item-status-done";
     el.innerHTML = `
@@ -506,19 +525,37 @@ function renderExams() {
   }
 }
 
-// 主题讨论：两 Tab（未结束 / 全部），右键仅「详情」（用设置里的浏览器打开讨论详情页）
+// 主题讨论右侧时间位（§8.2.8）：有剩余时间显示剩余时长；没有剩余时间改为回复状态。
+// 回复状态与时间共用一个位置，不再显示发布日期/「已结束」。
+function discussionRemainText(it) {
+  if (!it.endAt) return "";
+  const ms = it.endAt - Date.now();
+  if (ms <= 0) return "";
+  const mins = Math.floor(ms / 60000);
+  if (mins < 60) return `剩 ${Math.max(1, mins)} 分钟`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `剩 ${hours} 小时`;
+  return `剩 ${Math.floor(hours / 24)} 天`;
+}
+
+// 主题讨论：三 Tab（未结束 / 已忽略 / 全部），右键「忽略/取消忽略」「详情」
 function renderDiscussions() {
   const deselected = new Set(S.account?.state?.deselectedCourses || []);   // §7.4：未选课程不展示
   const all = (S.snapshot?.items || []).filter((i) =>
     i.type === "discussion" && !deselected.has(i.courseId));
+  const ignored = ignoredSet();
+  const visible = [];
+  const ignoredItems = [];
+  for (const it of all) (ignored.has(itemKey(it)) ? ignoredItems : visible).push(it);
   const now = Date.now();
   // 未结束 = 未被关闭且未到截止时间；无截止时间信息的主题视为未结束（仍可回复）
   const ended = (it) => it.ended === true || (it.endAt > 0 && it.endAt <= now);
-  const unfinished = all.filter((it) => !ended(it));
+  const unfinished = visible.filter((it) => !ended(it));
 
   const tabs = [
     ["unfinished", `未结束 ${unfinished.length}`],
-    ["all", `全部 ${all.length}`],
+    ["ignored", `已忽略 ${ignoredItems.length}`],
+    ["all", `全部 ${visible.length}`],
   ];
   $("discussion-tabs").innerHTML = "";
   for (const [key, label] of tabs) {
@@ -531,31 +568,38 @@ function renderDiscussions() {
 
   const list = $("discussion-list");
   list.innerHTML = "";
-  const items = S.discussionTab === "unfinished" ? unfinished : all;
+  const items = S.discussionTab === "unfinished" ? unfinished
+    : S.discussionTab === "ignored" ? ignoredItems : visible;
   if (!items.length) {
-    list.innerHTML = `<div class="empty-tip">暂无主题讨论</div>`;
+    list.innerHTML = `<div class="empty-tip">${S.discussionTab === "ignored" ? "暂无已忽略主题" : "暂无主题讨论"}</div>`;
     return;
   }
-  // 新发布的在前；「全部」中已结束的置后
-  items.sort((a, b) => {
-    if (S.discussionTab === "all") {
-      const d = (ended(a) ? 1 : 0) - (ended(b) ? 1 : 0);
-      if (d) return d;
-    }
-    return (b.publishedAt || 0) - (a.publishedAt || 0);
-  });
+  if (S.discussionTab === "ignored") {
+    // 已忽略：操作时间近→远
+    items.sort((a, b) => ignoredTs(itemKey(b)) - ignoredTs(itemKey(a)));
+  } else {
+    // 新发布的在前；「全部」中已结束的置后
+    items.sort((a, b) => {
+      if (S.discussionTab === "all") {
+        const d = (ended(a) ? 1 : 0) - (ended(b) ? 1 : 0);
+        if (d) return d;
+      }
+      return (b.publishedAt || 0) - (a.publishedAt || 0);
+    });
+  }
   for (const it of items) {
     const el = document.createElement("div");
     el.className = "item";
-    const time = it.publishedAt
-      ? new Date(it.publishedAt).toLocaleString("zh-CN", { hour12: false, month: "2-digit", day: "2-digit" })
-      : "";
     const reply = it.replyCount != null ? `${it.replyCount} 回复` : (it.status || "");
+    const remain = discussionRemainText(it);
+    const tail = remain
+      ? `<span class="item-deadline">${escapeHtml(remain)}</span>`
+      : `<span class="${it.replied === true ? "item-status-done" : "item-deadline"}">${it.replied === true ? "已回复" : "未回复"}</span>`;
     el.innerHTML = `
       <div class="item-title" title="${escapeHtml(it.title)}">${escapeHtml(it.title)}</div>
       <div class="item-meta">
         <span>${escapeHtml(courseNameOf(it))}</span>
-        <span>${escapeHtml(reply)}${time ? " · " + time : ""}${ended(it) ? " · 已结束" : ""}</span>
+        <span>${escapeHtml(reply)} · ${tail}</span>
       </div>`;
     el.oncontextmenu = (e) => {
       e.preventDefault();
@@ -565,7 +609,7 @@ function renderDiscussions() {
   }
 }
 
-// 分组任务：两 Tab（未结束 / 全部）；未结束 = 仍有剩余时间（已结束的放全部）
+// 分组任务：三 Tab（未结束 / 已忽略 / 全部）；未结束 = 仍有剩余时间（已结束的放全部）
 // 分组任务剩余时间：与作业同一套规则（剩余小时 / 截止日期 / 两者 / 都不显示）
 function groupTaskTimeText(it) {
   if (!it.deadline) return "";
@@ -586,13 +630,18 @@ function renderGroupTasks() {
   const deselected = new Set(S.account?.state?.deselectedCourses || []);   // §7.4：未选课程不展示
   const all = (S.snapshot?.items || []).filter((i) =>
     i.type === "groupTask" && !deselected.has(i.courseId));
+  const ignored = ignoredSet();
+  const visible = [];
+  const ignoredItems = [];
+  for (const it of all) (ignored.has(itemKey(it)) ? ignoredItems : visible).push(it);
   const now = Date.now();
   const ended = (it) => it.ended === true || (it.deadline > 0 && it.deadline <= now);
-  const unfinished = all.filter((it) => !ended(it));
+  const unfinished = visible.filter((it) => !ended(it));
 
   const tabs = [
     ["unfinished", `未结束 ${unfinished.length}`],
-    ["all", `全部 ${all.length}`],
+    ["ignored", `已忽略 ${ignoredItems.length}`],
+    ["all", `全部 ${visible.length}`],
   ];
   $("group-task-tabs").innerHTML = "";
   for (const [key, label] of tabs) {
@@ -605,19 +654,24 @@ function renderGroupTasks() {
 
   const list = $("group-task-list");
   list.innerHTML = "";
-  const items = S.groupTaskTab === "unfinished" ? unfinished : all;
+  const items = S.groupTaskTab === "unfinished" ? unfinished
+    : S.groupTaskTab === "ignored" ? ignoredItems : visible;
   if (!items.length) {
-    list.innerHTML = `<div class="empty-tip">暂无分组任务</div>`;
+    list.innerHTML = `<div class="empty-tip">${S.groupTaskTab === "ignored" ? "暂无已忽略分组任务" : "暂无分组任务"}</div>`;
     return;
   }
-  // 未结束按截止时间从近到远；「全部」中已结束的置后
-  items.sort((a, b) => {
-    if (S.groupTaskTab === "all") {
-      const d = (ended(a) ? 1 : 0) - (ended(b) ? 1 : 0);
-      if (d) return d;
-    }
-    return (a.deadline || Number.MAX_SAFE_INTEGER) - (b.deadline || Number.MAX_SAFE_INTEGER);
-  });
+  // 未结束按截止时间从近到远；「全部」中已结束的置后；「已忽略」按操作时间近到远
+  if (S.groupTaskTab === "ignored") {
+    items.sort((a, b) => ignoredTs(itemKey(b)) - ignoredTs(itemKey(a)));
+  } else {
+    items.sort((a, b) => {
+      if (S.groupTaskTab === "all") {
+        const d = (ended(a) ? 1 : 0) - (ended(b) ? 1 : 0);
+        if (d) return d;
+      }
+      return (a.deadline || Number.MAX_SAFE_INTEGER) - (b.deadline || Number.MAX_SAFE_INTEGER);
+    });
+  }
   for (const it of items) {
     const el = document.createElement("div");
     el.className = "item";
@@ -793,14 +847,50 @@ function showExamCtxMenu(x, y, it) {
   menu.classList.remove("hidden");
 }
 
-// 分组任务右键：仅「详情」，用设置里的浏览器打开对应任务页
+// 分组任务右键：忽略/取消忽略、详情（用设置里的浏览器打开任务页）
 function showGroupTaskCtxMenu(x, y, it) {
-  showExamCtxMenu(x, y, it);
+  const menu = $("ctx-menu");
+  menu.innerHTML = "";
+  const mk = (label, fn) => {
+    const el = document.createElement("div");
+    el.className = "ctx-item";
+    el.textContent = label;
+    el.onclick = () => { hideCtxMenu(); fn(); };
+    menu.appendChild(el);
+  };
+  const isIgnored = ignoredSet().has(itemKey(it));
+  mk(isIgnored ? "取消忽略" : "忽略", async () => {
+    const r = await bridge.call("ignore.set", { key: itemKey(it), ignored: !isIgnored });
+    (S.account.state ??= {}).ignored = r.ignored || [];
+    renderGroupTasks();
+  });
+  mk("详情", () => openItemDetail(it));
+  menu.style.left = Math.min(x, innerWidth - 130) + "px";
+  menu.style.top = Math.min(y, innerHeight - 100) + "px";
+  menu.classList.remove("hidden");
 }
 
-// 主题讨论右键：仅「详情」，用设置里的浏览器打开讨论详情页
+// 主题讨论右键：忽略/取消忽略、详情（设置里的浏览器打开讨论页）
 function showDiscussionCtxMenu(x, y, it) {
-  showExamCtxMenu(x, y, it);
+  const menu = $("ctx-menu");
+  menu.innerHTML = "";
+  const mk = (label, fn) => {
+    const el = document.createElement("div");
+    el.className = "ctx-item";
+    el.textContent = label;
+    el.onclick = () => { hideCtxMenu(); fn(); };
+    menu.appendChild(el);
+  };
+  const isIgnored = ignoredSet().has(itemKey(it));
+  mk(isIgnored ? "取消忽略" : "忽略", async () => {
+    const r = await bridge.call("ignore.set", { key: itemKey(it), ignored: !isIgnored });
+    (S.account.state ??= {}).ignored = r.ignored || [];
+    renderDiscussions();
+  });
+  mk("详情", () => openItemDetail(it));
+  menu.style.left = Math.min(x, innerWidth - 130) + "px";
+  menu.style.top = Math.min(y, innerHeight - 100) + "px";
+  menu.classList.remove("hidden");
 }
 
 // 作业/消息共用的「详情」：系统浏览器打开对应网页

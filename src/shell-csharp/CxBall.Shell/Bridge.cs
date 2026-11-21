@@ -328,7 +328,9 @@ sealed class Bridge
                 : (s["parallelEnabled"]?.GetValue<bool>() == false
                     ? 1
                     : Math.Clamp(s["parallelCount"]?.GetValue<int>() ?? 4, 2, 8));
-            var result = await _core.FetchStart(modules, selected, parallel);
+            // 主题讨论回复判定（v4.4）：把当前账号昵称传给 Java，精确比对回复人，命中即停止。
+            var userName = AccountStore.LoadMeta(acct)?["nickname"]?.GetValue<string>() ?? "";
+            var result = await _core.FetchStart(modules, selected, parallel, userName);
             // 优先使用 Java 返回的课程列表：已选课程带 stuenc/enc，随快照落盘（附录 B.4）；
             // 课程阶段失败时回落到阶段一列表，保证设置页仍能看到课程名。
             if (result["courses"] is not JsonArray fetched || fetched.Count == 0)
